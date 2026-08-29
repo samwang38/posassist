@@ -1,0 +1,30 @@
+# PosAssist 一般設定
+#
+# 複製成同目錄的 posassist.properties 再改；沒有這個檔就用下面的預設值。
+#   cp posassist.properties.example posassist.properties
+
+# 面板要放哪裡：
+#   embedded = 結帳時嵌進 EPB 左側欄（預設）。POSN 開啟時側欄變成「會員／應用程式」
+#              兩個分頁，預設顯示會員；關掉 POSN 側欄自動還原。
+#              側欄收合請用 EPB 自己的 Toggle Full Screen 按鈕（應用程式標題列左邊那個），
+#              收起時面板會一起收起。
+#   floating = 舊版行為：獨立的置頂浮動視窗，跟著 POSN 畫面走。
+#
+# 嵌入失敗（找不到側欄結構、EPB 改版等）時會自動退回 floating，不需要手動改。
+# 覺得嵌入版不合用，改成 floating 重開 EPB 即可，不必重裝。
+panelMode=embedded
+
+# 開啟 EPB 時要不要自動更新到最新版（true / false）。
+# 更新只發生在啟動器裡、EPB 還沒起來之前，絕不會在結帳中途換程式；
+# 檢查限時 5 秒、下載限時 20 秒，任何失敗都直接用現有版本開，不會拖到開店。
+# 下載後會比對 sha256，不符就丟掉不換；上一版永遠留在 posassist.jar.prev。
+# 設成 false 就完全不連網。
+autoUpdate=true
+
+# 帶入會員後，焦點要回到 POS 的哪個欄位。預設是品項/條碼輸入欄。
+# 只有版面不同的門市才需要改。
+#posInputField=pluIdTextField
+
+# F10 序號視窗裡「預約單號」的欄位。預設會自動用標籤文字去認，
+# 認不到才會用這個值。
+#reservationRefField=lineRef7TextField

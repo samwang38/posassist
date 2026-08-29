@@ -1,0 +1,36 @@
+# PosAssist 預約整合設定
+#
+# 把這個檔複製成同目錄的 reservation.properties 並填好，重開 EPB 即生效。
+#   cp reservation.properties.example reservation.properties
+#   chmod 600 reservation.properties
+#
+# 沒有 reservation.properties 時，預約功能整個不啟用，
+# 面板其餘功能（會員查詢、帶入 POS）完全不受影響。
+#
+# 注意：password 是明文存在這台電腦上。請確認這台機器只有店內人員使用，
+# 並保持 600 權限（只有檔案擁有者能讀寫）。
+
+# 上游 API 位址，必須是 https
+baseUrl=https://www.studioa.com.tw/backend/api/
+
+# 這家門市自己的預約系統帳號（每家店不同）
+userName=
+password=
+
+# 面板要顯示最近幾天內「登記」的預約（1-365）
+#
+# 參考：士林門市 2026-08-29 實測，近 30 日只有 4 筆、近 90 日 44 筆、近 180 日 172 筆。
+# 設 30 的話店員多數時候會看到空白。想讓面板常有東西可看，建議 90 或 180。
+windowDays=30
+
+# 向 API 查詢的梯次期間區間，前後各幾天（30-730）。
+# 注意：API 的 StartTime/EndTime 篩的是梯次期間而不是登記日期，
+# 所以要用寬區間把現行梯次都撈回來，再由上面的 windowDays 依登記日期篩。
+# 預約站前端自己也是用 180。除非漏抓，否則不要改小。
+apiWindowDays=180
+
+# 多久更新一次，單位分鐘（5-1440）
+refreshMinutes=60
+
+# 面板上最多顯示幾筆（1-10），超過的顯示「另有 N 筆」
+maxRows=3

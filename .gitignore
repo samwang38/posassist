@@ -1,0 +1,25 @@
+# 個人設定 —— 絕對不能進版控
+#
+# 用「檔名」而不是「目錄」來擋：先前寫成 config/ 會連 installer/payload/config/
+# 一起排除，而 git 不會進入被排除的目錄，安裝用的 *.example 範本就跟著漏掉。
+reservation.properties
+posassist.properties
+codes.txt
+codes.txt.bak
+
+# 萬一有人把部署目錄整包複製進來
+/config/
+
+# 建置產物：jar 走 GitHub Releases，不進版控
+build/
+dist/
+*.jar
+*.class
+VERSION
+
+# log
+logs/
+*.log
+
+# macOS
+.DS_Store

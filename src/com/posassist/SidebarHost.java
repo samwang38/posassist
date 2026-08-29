@@ -1,0 +1,354 @@
+package com.posassist;
+
+import java.awt.BorderLayout;
+import java.awt.CardLayout;
+import java.awt.Color;
+import java.awt.Component;
+import java.awt.Container;
+import java.awt.Font;
+import java.awt.Window;
+import java.awt.event.ActionEvent;
+import java.awt.event.ActionListener;
+import java.util.ArrayList;
+import java.util.List;
+
+import javax.swing.BorderFactory;
+import javax.swing.JButton;
+import javax.swing.JComponent;
+import javax.swing.JPanel;
+import javax.swing.JSplitPane;
+import javax.swing.SwingUtilities;
+import javax.swing.Timer;
+
+/**
+ * 把輔助面板掛進 EPB 左側欄（MainView 的 JSplitPane 左元件）。
+ *
+ * 做法：把左元件換成一個 CardLayout 容器，裡面兩張卡 —— 我們的面板、以及
+ * EPB 原本的側欄。原本那個元件**只是換父容器，內容一個字都不改**。
+ *
+ * 可回復性是這個類別的第一要務：
+ * 1. 全程只呼叫 setLeftComponent，不 remove、不 dispose、不改原元件屬性
+ * 2. 原元件同時被欄位持有，還原就是把同一個物件掛回去
+ * 3. 看門狗（Swing Timer，跑在 EDT 上，不依賴外掛自己的執行緒）會在該還原時還原
+ * 4. shutdown hook 收尾
+ * 5. 任何一步不確定就完全不動側欄
+ */
+public final class SidebarHost {
+
+    /** 由呼叫端回答「現在還該掛著嗎」。回 false 看門狗就會還原。 */
+    public interface Guard {
+        boolean shouldStayMounted();
+    }
+
+    private static final String CARD_ASSIST = "assist";
+    private static final String CARD_HOME = "home";
+    private static final int WATCHDOG_INTERVAL_MS = 5000;
+    private static final int MAX_SEARCH_DEPTH = 12;
+
+    private static final Color BAR_BG = new Color(0xEC, 0xEF, 0xF3);
+    private static final Color ACCENT = new Color(0x1D, 0x4E, 0x89);
+    private static final Color MUTED = new Color(0x55, 0x5A, 0x63);
+
+    private final Guard guard;
+
+    private JSplitPane splitPane;
+    private Component originalLeft;
+    private JPanel cards;
+    private CardLayout cardLayout;
+    private JButton assistButton;
+    private JButton homeButton;
+    private Timer watchdog;
+    private Thread shutdownHook;
+    private volatile boolean mounted;
+
+    public SidebarHost(Guard guard) {
+        this.guard = guard;
+    }
+
+    public boolean isMounted() {
+        return mounted;
+    }
+
+    // -- 掛上 --------------------------------------------------------------
+
+    /**
+     * 把面板掛進側欄。必須在 EDT 上呼叫。
+     * 回傳 false 代表沒動側欄（呼叫端應改用浮動視窗）。
+     */
+    public boolean mount(JComponent assistContent) {
+        if (mounted || assistContent == null) {
+            return mounted;
+        }
+        JSplitPane found = findShellSplitPane();
+        if (found == null) {
+            PosLog.warn("找不到 EPB 側欄的 JSplitPane，改用浮動視窗");
+            return false;
+        }
+        return mountOn(found, assistContent);
+    }
+
+    /** 指定 split pane 掛載。分出來是為了讓回復性測試可以注入受控的 split pane。 */
+    boolean mountOn(JSplitPane found, JComponent assistContent) {
+        if (mounted || found == null || assistContent == null) {
+            return mounted;
+        }
+        Component left = found.getLeftComponent();
+        if (left == null || found.getRightComponent() == null) {
+            PosLog.warn("側欄結構與預期不符，改用浮動視窗");
+            return false;
+        }
+
+        try {
+            splitPane = found;
+            originalLeft = left;
+
+            cardLayout = new CardLayout();
+            cards = new JPanel(cardLayout);
+            cards.add(assistContent, CARD_ASSIST);
+            cards.add(originalLeft, CARD_HOME);      // 換父容器，物件本身不動
+
+            JPanel host = new JPanel(new BorderLayout());
+            host.add(buildSwitcher(), BorderLayout.NORTH);
+            host.add(cards, BorderLayout.CENTER);
+
+            // 只換元件，不碰 divider 位置，也不碰全螢幕狀態
+            splitPane.setLeftComponent(host);
+            splitPane.revalidate();
+            splitPane.repaint();
+
+            mounted = true;
+            select(CARD_ASSIST);
+            startWatchdog();
+            installShutdownHook();
+            PosLog.info("輔助面板已掛進左側欄");
+            return true;
+        } catch (Throwable t) {
+            PosLog.warn("掛載側欄失敗，立刻還原並改用浮動視窗", t);
+            restore();
+            return false;
+        }
+    }
+
+    private JPanel buildSwitcher() {
+        JPanel bar = new JPanel(new BorderLayout());
+        bar.setBackground(BAR_BG);
+        bar.setBorder(BorderFactory.createEmptyBorder(4, 6, 4, 6));
+
+        JPanel buttons = new JPanel();
+        buttons.setOpaque(false);
+        buttons.setLayout(new java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 4, 0));
+
+        assistButton = tab("輔助工具", CARD_ASSIST);
+        homeButton = tab("應用程式", CARD_HOME);
+        buttons.add(assistButton);
+        buttons.add(homeButton);
+
+        bar.add(buttons, BorderLayout.WEST);
+        return bar;
+    }
+
+    private JButton tab(String text, final String card) {
+        JButton button = new JButton(text);
+        button.setFocusable(false);
+        button.setFont(button.getFont().deriveFont(12f));
+        button.addActionListener(new ActionListener() {
+            public void actionPerformed(ActionEvent event) {
+                Safe.guard("切換側欄分頁", new Runnable() {
+                    public void run() {
+                        select(card);
+                    }
+                });
+            }
+        });
+        return button;
+    }
+
+    private void select(String card) {
+        if (!mounted || cardLayout == null) {
+            return;
+        }
+        cardLayout.show(cards, card);
+        boolean assist = CARD_ASSIST.equals(card);
+        style(assistButton, assist);
+        style(homeButton, !assist);
+    }
+
+    private static void style(JButton button, boolean active) {
+        if (button == null) {
+            return;
+        }
+        button.setForeground(active ? ACCENT : MUTED);
+        button.setFont(button.getFont().deriveFont(active ? Font.BOLD : Font.PLAIN, 12f));
+    }
+
+    /** 讓外部（例如面板自己）切回應用程式清單。 */
+    public void showHome() {
+        select(CARD_HOME);
+    }
+
+    // -- 還原 --------------------------------------------------------------
+
+    /**
+     * 把側欄還原成原狀。可重複呼叫，也可在任何執行緒呼叫。
+     * 這是整個設計最重要的一條路徑，所以每一步都各自 try 住，
+     * 前一步失敗不能擋住後一步。
+     */
+    public void restore() {
+        final JSplitPane pane = splitPane;
+        final Component original = originalLeft;
+        final JPanel container = cards;
+
+        mounted = false;
+        stopWatchdog();
+
+        if (pane == null || original == null) {
+            clear();
+            return;
+        }
+
+        Runnable job = new Runnable() {
+            public void run() {
+                try {
+                    if (container != null) {
+                        container.remove(original);
+                    }
+                } catch (Throwable ignored) {
+                    // 拿不掉沒關係，setLeftComponent 也會重新指定父容器
+                }
+                try {
+                    pane.setLeftComponent(original);
+                    pane.revalidate();
+                    pane.repaint();
+                    PosLog.info("左側欄已還原");
+                } catch (Throwable t) {
+                    PosLog.warn("還原左側欄失敗", t);
+                }
+                clear();
+            }
+        };
+
+        if (SwingUtilities.isEventDispatchThread()) {
+            job.run();
+        } else {
+            try {
+                SwingUtilities.invokeAndWait(job);
+            } catch (Throwable t) {
+                // EDT 已經沒了（例如關閉流程中），直接試一次
+                Safe.guard("直接還原側欄", job);
+            }
+        }
+    }
+
+    private void clear() {
+        splitPane = null;
+        originalLeft = null;
+        cards = null;
+        cardLayout = null;
+        assistButton = null;
+        homeButton = null;
+        removeShutdownHook();
+    }
+
+    // -- 看門狗與 shutdown hook -------------------------------------------
+
+    /** 跑在 EDT 上，不依賴外掛自己的背景執行緒 —— 那條執行緒死了這裡照樣運作。 */
+    private void startWatchdog() {
+        stopWatchdog();
+        watchdog = new Timer(WATCHDOG_INTERVAL_MS, new ActionListener() {
+            public void actionPerformed(ActionEvent event) {
+                Safe.guard("側欄看門狗", new Runnable() {
+                    public void run() {
+                        if (mounted && guard != null && !guard.shouldStayMounted()) {
+                            PosLog.info("看門狗偵測到目標 app 已不在，還原側欄");
+                            restore();
+                        }
+                    }
+                });
+            }
+        });
+        watchdog.setRepeats(true);
+        watchdog.start();
+    }
+
+    private void stopWatchdog() {
+        if (watchdog != null) {
+            try {
+                watchdog.stop();
+            } catch (Throwable ignored) {
+                // 停不掉就算了
+            }
+            watchdog = null;
+        }
+    }
+
+    private void installShutdownHook() {
+        removeShutdownHook();
+        try {
+            shutdownHook = new Thread(new Runnable() {
+                public void run() {
+                    Safe.guard("結束前還原側欄", new Runnable() {
+                        public void run() {
+                            restore();
+                        }
+                    });
+                }
+            }, "PosAssist-SidebarRestore");
+            Runtime.getRuntime().addShutdownHook(shutdownHook);
+        } catch (Throwable ignored) {
+            shutdownHook = null;
+        }
+    }
+
+    private void removeShutdownHook() {
+        if (shutdownHook == null) {
+            return;
+        }
+        try {
+            Runtime.getRuntime().removeShutdownHook(shutdownHook);
+        } catch (Throwable ignored) {
+            // 已經在關閉流程中就移不掉，無所謂
+        }
+        shutdownHook = null;
+    }
+
+    // -- 尋找側欄 ----------------------------------------------------------
+
+    /**
+     * 從 shell 主視窗往下廣度優先，取最淺的 JSplitPane。
+     * 應用程式自己的 split pane 都巢在 applicationPanel 更深處，所以最淺的是 MainView 的。
+     */
+    static JSplitPane findShellSplitPane() {
+        Object frame = Safe.staticCall("com.ipt.epbfrw.EpbSharedObjects",
+            "getShellFrame", new Class<?>[0], new Object[0]);
+        if (!(frame instanceof Window)) {
+            return null;
+        }
+        return findSplitPane((Container) frame);
+    }
+
+    private static JSplitPane findSplitPane(Container root) {
+        List<Container> level = new ArrayList<Container>();
+        level.add(root);
+        for (int depth = 0; depth < MAX_SEARCH_DEPTH && !level.isEmpty(); depth++) {
+            List<Container> next = new ArrayList<Container>();
+            for (int i = 0; i < level.size(); i++) {
+                Component[] children;
+                try {
+                    children = level.get(i).getComponents();
+                } catch (Throwable t) {
+                    continue;
+                }
+                for (int j = 0; j < children.length; j++) {
+                    if (children[j] instanceof JSplitPane) {
+                        return (JSplitPane) children[j];
+                    }
+                    if (children[j] instanceof Container) {
+                        next.add((Container) children[j]);
+                    }
+                }
+            }
+            level = next;
+        }
+        return null;
+    }
+}

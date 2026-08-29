@@ -1,0 +1,19 @@
+# 原廠檔案基準（用來證明外掛沒動過任何原廠檔案）
+# 建立時間：2026-08-27 23:10:33
+
+## lib/ 整體指紋
+jar 數量: 1945
+總位元組: 261464089
+最新 mtime: 2026-05-08 16:08:19
+
+## 關鍵 jar sha256
+d6ffd0b6d0572bdecf99fe8d9c73e3b5ae4568733a4fd65d89cf2df35b10f5d9  lib/posn.jar
+5c6fbb5c8b01a4366b1c9656617f9cf79f4d696a635990b1901ab2d2eed0e2e7  lib/posutl.jar
+2bf2bd06c6e6fba973dbe84a2aec5391b1a6bc028fc73ff08831c57239b55720  lib/epbposcustom.jar
+b0acce71726222413c069bfd0cf3b17f7cfdc098cc707e5d8836f372af53243e  lib/framework.jar
+033574ee9a788f6c08eab0c0a3f2fec64874bf2f69873bc8fd07230f1d5b525b  lib/epbtls.jar
+fc3d0c606d09172a4cc4d0ac53ea92af3ee9368f3404f8a777015a0438aee987  lib/epbfrw.jar
+
+## 註
+shell.jar 不列入基準：EPB 每次啟動都會由 ClassPathUtility 重寫它的 manifest Class-Path，
+那是原廠行為，跟外掛無關。外掛從頭到尾沒有寫入 Shell/ 底下任何檔案。
