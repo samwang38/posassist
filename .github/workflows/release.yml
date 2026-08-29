@@ -1,0 +1,83 @@
+name: 發佈
+
+# 推到 main 就會跑。只有當 Version.java 的版號還沒發佈過時才會建立 Release，
+# 所以忘記改版號只是「什麼都不會發生」，不會覆蓋掉門市正在用的版本。
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 外掛本身是 Java 8 目標；用 8 建置最貼近門市實際跑的環境
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '8'
+
+      - name: 讀出版號
+        id: version
+        run: |
+          VERSION=$(grep -oE 'NAME = "[^"]+"' src/com/posassist/Version.java \
+            | sed 's/.*"\(.*\)"/\1/')
+          if [ -z "$VERSION" ]; then
+            echo "在 Version.java 找不到版號"
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "版號 $VERSION"
+
+      - name: 這個版號發佈過了嗎
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "v${{ steps.version.outputs.version }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "v${{ steps.version.outputs.version }} 已經發佈過，這次不動作。"
+            echo "要發新版請改 src/com/posassist/Version.java 的 NAME。"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 建置與打包
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          chmod +x build.command 打包.command
+          ./打包.command
+
+      # 公開 repo，任何人都看得到 —— 發出去之前再確認一次沒有夾帶真實設定
+      - name: 確認沒有夾帶機密
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          V="${{ steps.version.outputs.version }}"
+          if find "dist/PosAssist-$V" -name '*.properties' -not -name '*.example' | grep -q .; then
+            echo "安裝包裡有非範本的設定檔"
+            exit 1
+          fi
+          if grep -rlE '^(userName|password)=.+' "dist/PosAssist-$V" | grep -q .; then
+            echo "安裝包裡有非空的帳號或密碼"
+            exit 1
+          fi
+          echo "乾淨"
+
+      - name: 建立 Release
+        if: steps.check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          V="${{ steps.version.outputs.version }}"
+          gh release create "v$V" \
+            posassist.jar \
+            dist/manifest.txt \
+            "dist/PosAssist-$V.zip" \
+            --title "PosAssist $V" \
+            --notes "門市端會在下次開啟 EPB 時自動更新到這一版。個人設定（帳密、結帳代碼、面板模式）不受影響。"
+          echo "已發佈 v$V"

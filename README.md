@@ -59,15 +59,30 @@ macOS 專用。
 
 ---
 
-## 開發
+## 發新版
+
+改完程式後，跑一支就好：
 
 ```bash
-./build.command          # 編譯出 posassist.jar
-./發佈.command           # 建置 + 組安裝包（不發佈）
-./發佈.command --release # 建置 + 組包 + 發到 GitHub Releases
+./發版.command 1.5.0
 ```
 
-版本號的唯一來源是 `src/com/posassist/Version.java` 的 `NAME`。
+它會改版號、提交、推上去；GitHub Actions 接手編譯、算 sha256、建 Release。
+門市下次開 EPB 就會自動更新到這一版。
+
+**版號一定要換。** 門市是比對版號決定要不要更新，同一個版號重發不會觸發任何更新。
+`發版.command` 會擋掉重複的版號。
+
+其他指令：
+
+```bash
+./build.command          # 只編譯出 posassist.jar
+./打包.command           # 建置 + 組安裝包 + 產生 manifest（不發佈）
+./發佈.command --release # 從本機直接發佈（平常用不到，push 就會自動發）
+```
+
+版本號的唯一來源是 `src/com/posassist/Version.java` 的 `NAME`；
+`打包.command` 由本機與 CI 共用，所以兩邊的產出不會走鐘。
 
 ### 設計不變量
 
