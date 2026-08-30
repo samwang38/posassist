@@ -164,6 +164,13 @@ public final class SelfTest {
         bindCount("精確查詢", VipLookup.buildExactSql(1, 1), 4);
         bindCount("電話備援", VipLookup.buildFallbackSql(), 3);
         // 備註4（LINE 會員）：帶與不帶兩種 SQL 都要能用，欄位不存在時才降得下去
+        // 慢查詢診斷用的 SQL 也要兩邊都能跑，而且不能把原句改壞
+        sqlPortable("診斷 會員數", "SELECT COUNT(*) FROM POS_VIP_MAS");
+        sqlPortable("診斷 等級數", "SELECT COUNT(*) FROM POS_VIP_CLASS");
+        String plain = VipLookup.buildExactSql(1, 1);
+        record("EXPLAIN 只是加前綴，不動原句",
+            ("EXPLAIN " + plain).substring("EXPLAIN ".length()).equals(plain));
+
         record("精確查詢有帶備註4",
             VipLookup.buildExactSql(1, 1).indexOf(VipLookup.REMARK_COLUMN) > 0);
         record("備註4 可以拿掉",

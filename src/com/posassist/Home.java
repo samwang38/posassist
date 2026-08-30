@@ -2,7 +2,10 @@ package com.posassist;
 
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.io.OutputStreamWriter;
+import java.io.PrintWriter;
 import java.util.Properties;
 
 /**
@@ -65,5 +68,53 @@ public final class Home {
         }
         String value = config.getProperty(key, "").trim();
         return value.length() == 0 ? fallback : value;
+    }
+
+    /**
+     * 寫設定／狀態檔：暫存檔 + rename，跟 CodeStore 同一套 ——
+     * 寫到一半失敗不會留下半截設定。成功回 null，失敗回可讀原因。
+     * ownerOnly 用在含密碼的檔案：先收緊權限再換上去。
+     */
+    public static String write(String relativePath, String body, boolean ownerOnly) {
+        File target = Home.file(relativePath);
+        File temp = Home.file(relativePath + ".tmp");
+        File dir = target.getParentFile();
+        if (dir != null && !dir.isDirectory() && !dir.mkdirs()) {
+            return "建立不了設定目錄";
+        }
+        PrintWriter writer = null;
+        try {
+            writer = new PrintWriter(
+                new OutputStreamWriter(new FileOutputStream(temp), "UTF-8"));
+            writer.print(body);
+            writer.flush();
+            if (writer.checkError()) {
+                return "寫入失敗";
+            }
+        } catch (Throwable t) {
+            return "寫入失敗";
+        } finally {
+            if (writer != null) {
+                writer.close();
+            }
+        }
+        if (ownerOnly) {
+            // 密碼檔：先收緊權限再換上去，避免有一瞬間是所有人可讀
+            temp.setReadable(false, false);
+            temp.setWritable(false, false);
+            temp.setReadable(true, true);
+            temp.setWritable(true, true);
+        }
+        try {
+            if (target.isFile() && !target.delete()) {
+                return "更新不了設定檔";
+            }
+            if (!temp.renameTo(target)) {
+                return "更新不了設定檔";
+            }
+        } catch (Throwable t) {
+            return "更新不了設定檔";
+        }
+        return null;
     }
 }

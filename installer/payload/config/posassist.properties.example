@@ -21,6 +21,18 @@ panelMode=embedded
 # 設成 false 就完全不連網。
 autoUpdate=true
 
+# 開 EPB 時要不要順便帶起 EPB Helper（true / false，預設 true）。
+# Helper 是 EPB 原本啟動腳本會開的那支常駐程式（系統列上的 Enterprise Browser）：
+# 總部推的 EPB 熱修補要靠它安裝，公告彈窗也是它跳的。
+# 關掉的話 POS 照常運作，但這台就收不到 EPB 更新與公告。
+#startEpbHelper=false
+
+# 會員查詢慢的時候要不要自動記錄一次現場資料（true / false，預設 true）。
+# 每次查詢都會在 posassist.log 留一行分段耗時；某次超過 2 秒時，
+# 會再補抓一次資料量與執行計畫（每次開店只抓一次，用 EXPLAIN 不會重跑查詢）。
+# 純粹是排效能問題用的，不影響查詢結果，也不會把電話或姓名寫進 log。
+#vipDiagnose=false
+
 # 帶入會員後，焦點要回到 POS 的哪個欄位。預設是品項/條碼輸入欄。
 # 只有版面不同的門市才需要改。
 #posInputField=pluIdTextField

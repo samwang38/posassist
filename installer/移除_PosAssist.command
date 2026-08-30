@@ -58,7 +58,7 @@ rm -f "$TARGET/config/reservation.properties.example" \
 # 使用者自己的東西一律保留：門市帳密、面板設定、結帳代碼清單。
 # 重裝或升級時不必重填，也避免誤刪店員辛苦建好的代碼。
 KEPT=""
-for f in reservation.properties posassist.properties codes.txt codes.txt.bak codes.pins.txt; do
+for f in reservation.properties posassist.properties codes.txt codes.txt.bak codes.pins.txt panel.state; do
   [ -f "$TARGET/config/$f" ] && KEPT="$KEPT  config/$f
 "
 done

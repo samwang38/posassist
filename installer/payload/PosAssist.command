@@ -157,6 +157,26 @@ auto_update() {
   return 0
 }
 
+# --- EPB Helper -----------------------------------------------------------
+# 原本的 Shell_Mac2_11.command 會先在背景開這支，我們的啟動器漏了它：
+# 它是 EPB 的熱修補安裝器（SYS_HOTPATCH）＋總部公告彈窗（EP_NOTIFY），常駐系統列。
+# 少了它 POS 照常結帳，但這台會安靜地收不到總部推的 EPB 更新與公告。
+#
+# epbhlp 自己有單一實例保護（已經在跑就自己結束），所以不必先檢查。
+# 工作目錄一定要是 EPBrowser 根目錄 —— 它的 Class-Path 是相對路徑。
+start_epb_helper() {
+  local cfg="$SCRIPT_DIR/config/posassist.properties"
+  if [ -f "$cfg" ] \
+     && grep -qiE '^[[:space:]]*startEpbHelper[[:space:]]*=[[:space:]]*false' "$cfg"; then
+    return 0
+  fi
+  local root
+  root="$(dirname "$EPB_DIR")"
+  [ -f "$root/Helper/epbhlp.jar" ] || return 0
+  ( cd "$root" && "$JAVA" -jar Helper/epbhlp.jar >/dev/null 2>&1 & ) || true
+  return 0
+}
+
 # --- 啟動 -----------------------------------------------------------------
 
 if [ ! -f "$SHELL_DIR/shell.jar" ]; then
@@ -187,6 +207,9 @@ else
   echo "找不到 Java 8。EPB 本身就需要 Java 8，請先確認 EPB 能正常開啟。"
   exit 1
 fi
+
+# 跟原本的啟動腳本一樣，先把 Helper 帶起來再開 EPB。出事也不能擋住開店。
+( start_epb_helper ) || true
 
 # EPB 要求工作目錄是 Shell/，否則找不到 Setting.xml 與 log/
 cd "$SHELL_DIR" || exit 1

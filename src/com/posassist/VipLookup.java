@@ -25,6 +25,9 @@ public final class VipLookup {
 
     public static final int MAX_RESULTS = 5;
 
+    /** 超過這個毫秒數就算慢，會補抓一次執行計畫（每個 session 只抓一次）。 */
+    private static final long SLOW_MS = 2000;
+
     private static final String UTILITY = "com.ipt.epbtls.EpbApplicationUtility";
     private static final String SHARED = "com.ipt.epbfrw.EpbSharedObjects";
     private static final String DEFAULT_ORG_ID = "01";
@@ -51,6 +54,9 @@ public final class VipLookup {
      * 之後整個 session 都不再帶它 —— 寧可少一個欄位，也不要讓會員查詢一直失敗。
      */
     private static volatile boolean remarkAvailable = true;
+
+    /** 診斷只做一次：慢的原因是固定的，重複抓只會洗版並且每次多兩個查詢。 */
+    private static volatile boolean diagnosed;
 
     private VipLookup() {
     }
@@ -179,18 +185,63 @@ public final class VipLookup {
             return Outcome.message("請輸入會員電話或會員代碼");
         }
 
+        // 分段計時：要能一眼看出慢的是精確查詢、備援、還是組裝
+        long startedAt = System.currentTimeMillis();
         List<Vector> rows = runExact(codes, phones);
+        long exactMs = System.currentTimeMillis() - startedAt;
         if (rows == null) {
+            timing(codes, phones, exactMs, rows, -1, null, startedAt);
             return Outcome.message("查詢無法完成，請稍後再試");
         }
+
+        long fallbackMs = -1;
+        boolean usedFallback = false;
         if (rows.isEmpty() && canonical != null) {
             // 精確查無，才跑資料庫端正規化備援
+            usedFallback = true;
+            long fallbackAt = System.currentTimeMillis();
             rows = runFallback(canonical);
+            fallbackMs = System.currentTimeMillis() - fallbackAt;
             if (rows == null) {
+                timing(codes, phones, exactMs, rows, fallbackMs, null, startedAt);
                 return Outcome.message("查詢無法完成，請稍後再試");
             }
         }
-        return toOutcome(rows, canonical);
+
+        Outcome outcome = toOutcome(rows, canonical);
+        timing(codes, phones, exactMs, rows, usedFallback ? fallbackMs : -1,
+            outcome, startedAt);
+        diagnoseIfSlow(System.currentTimeMillis() - startedAt, codes, phones);
+        return outcome;
+    }
+
+    /**
+     * 把這次查詢的分段耗時寫進 log。
+     *
+     * 只記輸入的「種類」與筆數，不記電話與姓名 —— log 留在門市機器上，
+     * 沒必要為了排效能問題多存一份個資。
+     */
+    private static void timing(Set<String> codes, Set<String> phones, long exactMs,
+        List<Vector> rows, long fallbackMs, Outcome outcome, long startedAt) {
+        StringBuilder line = new StringBuilder("會員查詢 ");
+        line.append(kind(codes, phones));
+        line.append(" 精確 ").append(exactMs).append("ms/")
+            .append(rows == null ? "失敗" : (rows.size() + "筆"));
+        if (fallbackMs >= 0) {
+            line.append(" → 備援 ").append(fallbackMs).append("ms");
+        }
+        if (outcome != null) {
+            line.append(" → 顯示 ").append(outcome.results.size()).append("筆");
+        }
+        line.append("，總計 ").append(System.currentTimeMillis() - startedAt).append("ms");
+        PosLog.info(line.toString());
+    }
+
+    private static String kind(Set<String> codes, Set<String> phones) {
+        if (!codes.isEmpty() && !phones.isEmpty()) {
+            return "代碼+電話";
+        }
+        return codes.isEmpty() ? "電話" : "代碼";
     }
 
     /** 產生精確查詢的 SQL。SelfTest 也用這支做語法把關。 */
@@ -267,6 +318,98 @@ public final class VipLookup {
         return rows;
     }
 
+    // -- 慢查詢診斷 --------------------------------------------------------
+
+    /**
+     * 查詢慢到一定程度時，補抓一次現場證據：連線基準、資料量、執行計畫。
+     *
+     * 整個 session 只做一次 —— 慢的原因是固定的，重複抓只是洗版，而且每次都多兩個查詢。
+     * 任何一步失敗都只是少一項紀錄，不會影響查詢本身。
+     */
+    private static void diagnoseIfSlow(long totalMs, Set<String> codes,
+        Set<String> phones) {
+        if (diagnosed || totalMs < SLOW_MS || !diagnoseEnabled()) {
+            return;
+        }
+        diagnosed = true;
+        PosLog.info("會員查詢偏慢（" + totalMs + "ms），抓一次現場資料（本次連線只抓這一次）");
+        // 小表的往返時間＝連線本身的基準值，用來分辨是「這條連線慢」還是「這個查詢慢」
+        countOf("POS_VIP_CLASS");
+        countOf("POS_VIP_MAS");
+        explain(codes, phones);
+    }
+
+    private static boolean diagnoseEnabled() {
+        return !"false".equalsIgnoreCase(
+            Home.value("config/posassist.properties", "vipDiagnose", "true"));
+    }
+
+    private static void countOf(String table) {
+        String sql = "SELECT COUNT(*) FROM " + table;
+        long at = System.currentTimeMillis();
+        List<Vector> rows = query(sql, new ArrayList<Object>(), 2);
+        long ms = System.currentTimeMillis() - at;
+        String count = rows == null || rows.isEmpty() ? "查不到" : cell(rows.get(0), 0);
+        PosLog.info("  " + table + " 共 " + count + " 筆，耗時 " + ms + "ms");
+    }
+
+    /**
+     * 抓執行計畫。用 EXPLAIN 而不是 EXPLAIN ANALYZE —— 只要計畫，不要為了診斷
+     * 再把那句慢查詢真的跑一次。
+     *
+     * EXPLAIN 是 Postgres 語法，所以認不出資料庫種類時寧可不抓：送一句別家看不懂的
+     * SQL 進去，可能在店員畫面上跳出錯誤視窗。
+     */
+    private static void explain(Set<String> codes, Set<String> phones) {
+        if (!isPostgres()) {
+            PosLog.info("  不確定是不是 Postgres，跳過執行計畫");
+            return;
+        }
+        List<Object> params = new ArrayList<Object>();
+        params.add(sessionOrgId());
+        params.addAll(codes);
+        if (!phones.isEmpty()) {
+            params.addAll(phones);
+            params.addAll(phones);
+        }
+        List<Vector> plan = query(
+            "EXPLAIN " + buildExactSql(codes.size(), phones.size(), remarkAvailable),
+            params, 100);
+        if (plan == null || plan.isEmpty()) {
+            PosLog.info("  取不到執行計畫");
+            return;
+        }
+        for (int i = 0; i < plan.size(); i++) {
+            PosLog.info("  計畫 " + cell(plan.get(i), 0));
+        }
+    }
+
+    /** 看 EPB 的 DB_TYPE.xml（0 = Postgres）。讀不到就回 false，寧可不抓計畫。 */
+    private static boolean isPostgres() {
+        java.io.File file = Home.file("../../DB_TYPE.xml");
+        if (!file.isFile()) {
+            return false;
+        }
+        java.io.InputStream in = null;
+        try {
+            in = new java.io.FileInputStream(file);
+            byte[] buffer = new byte[4096];
+            int read = in.read(buffer);
+            String text = read <= 0 ? "" : new String(buffer, 0, read, "UTF-8");
+            return text.indexOf("<DB_TYPE>0<") >= 0;
+        } catch (Throwable t) {
+            return false;
+        } finally {
+            try {
+                if (in != null) {
+                    in.close();
+                }
+            } catch (Throwable ignored) {
+                // 關不掉就算了
+            }
+        }
+    }
+
     /** 登入中的 ORG_ID；取不到就退回 01。 */
     private static String sessionOrgId() {
         Object orgId = Safe.staticCall(SHARED, "getOrgId", new Class<?>[0], new Object[0]);
@@ -297,12 +440,17 @@ public final class VipLookup {
     }
 
     /** 走 EPB 已登入的連線。查詢失敗回 null，跟「查無資料」的空 list 區分開。 */
-    @SuppressWarnings("unchecked")
     private static List<Vector> query(String sql, List<Object> params) {
+        return query(sql, params, MAX_RESULTS + 1);
+    }
+
+    /** 診斷用的查詢會拿回比較多列（執行計畫動輒十幾行），所以筆數上限拉出來。 */
+    @SuppressWarnings("unchecked")
+    private static List<Vector> query(String sql, List<Object> params, int maxRows) {
         Object result = Safe.staticCall(
             UTILITY, "getResultList",
             new Class<?>[] { String.class, List.class, int.class },
-            new Object[] { sql, params, Integer.valueOf(MAX_RESULTS + 1) });
+            new Object[] { sql, params, Integer.valueOf(maxRows) });
         if (result == null) {
             return null;
         }

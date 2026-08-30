@@ -6,9 +6,9 @@ import java.awt.Component;
 import java.awt.Cursor;
 import java.awt.Dimension;
 import java.awt.Font;
+import java.awt.Graphics;
 import java.awt.GraphicsEnvironment;
 import java.awt.GridBagConstraints;
-import java.awt.GridLayout;
 import java.awt.GridBagLayout;
 import java.awt.Insets;
 import java.awt.Point;
@@ -36,6 +36,9 @@ import javax.swing.JDialog;
 import javax.swing.JLabel;
 import javax.swing.JPanel;
 import javax.swing.JScrollPane;
+import javax.swing.JSplitPane;
+import javax.swing.plaf.basic.BasicSplitPaneDivider;
+import javax.swing.plaf.basic.BasicSplitPaneUI;
 import javax.swing.JTextField;
 import javax.swing.SwingUtilities;
 import javax.swing.SwingWorker;
@@ -77,6 +80,16 @@ public final class FloatingPanel {
      * 寫成浮動視窗的寬度會讓嵌入時被切掉（不是換行，是直接看不到）。
      */
     private static final int WRAP_WIDTH = 280;
+    /** 面板記住的狀態（分隔位置）。跟設定分開放：設定視窗存檔是整份覆寫的。 */
+    private static final String STATE_PATH = "config/panel.state";
+    private static final String SPLIT_KEY = "verticalSplit";
+    /** 上半（會員資料）預設佔的比例。剩下的都給結帳代碼。 */
+    private static final double DEFAULT_SPLIT = 0.40;
+    /** 拖到極端位置會有一邊完全看不到，夾在這個範圍裡。 */
+    private static final double MIN_SPLIT = 0.15;
+    private static final double MAX_SPLIT = 0.85;
+    /** 拖曳時位置會連續變動，停手一秒才寫檔。 */
+    private static final int SPLIT_SAVE_DELAY_MS = 1000;
     /** 再窄也不讓品項名擠成一個字一行。 */
     private static final int MIN_WRAP_WIDTH = 120;
 
@@ -123,6 +136,9 @@ public final class FloatingPanel {
     private String reservationVip = "";
     /** 上次重畫預約區時的寬度，避免同一個寬度重畫兩次。 */
     private int lastWrapWidth = -1;
+    /** 嵌入模式的上下分隔；浮動視窗模式是 null。 */
+    private JSplitPane verticalSplit;
+    private Timer splitSaver;
 
     /** 浮動視窗模式：自己開一個置頂、不搶焦點的視窗，並追蹤 POSN 位置。 */
     public FloatingPanel(Window owner) {
@@ -172,8 +188,9 @@ public final class FloatingPanel {
     /**
      * 上半是會員、下半是結帳代碼。
      *
-     * 嵌入模式用 GridLayout(2,1) 讓兩半各佔一半：分界固定在正中間，
+     * 嵌入模式用可拖曳的分隔線分開，位置是固定比例（預設上半 40%）：
      * 九宮格的位置不會因為預約筆數多寡而上下跳，店員按代碼才有肌肉記憶。
+     * 拖過的位置會記在 config/panel.state，下次開啟沿用。
      * 浮動模式維持 NORTH + CENTER，因為那個視窗是依內容 pack 高度的。
      */
     private JPanel buildContent() {
@@ -234,11 +251,31 @@ public final class FloatingPanel {
             upperScroll.getViewport().setOpaque(false);
             upperScroll.getVerticalScrollBar().setUnitIncrement(16);
 
-            JPanel halves = new JPanel(new GridLayout(2, 1, 0, 6));
-            halves.setOpaque(false);
-            halves.add(upperScroll);
-            halves.add(codePad);
-            root.add(halves, BorderLayout.CENTER);
+            // 上下用可拖曳的分隔線分開。位置固定成比例（不是跟著內容長度跑），
+            // 九宮格才不會因為預約筆數多寡而上下跳 —— 原本用固定分半就是為了這個，
+            // 換成可拖曳之後靠 setResizeWeight 保住同一個性質。
+            upperScroll.setMinimumSize(new Dimension(0, 0));
+            codePad.setMinimumSize(new Dimension(0, 0));
+
+            verticalSplit = new JSplitPane(
+                JSplitPane.VERTICAL_SPLIT, upperScroll, codePad);
+            // 自己畫分隔線：Metal 與 Aqua 都只留一片空白，看不出那裡可以拖，
+            // 而門市的 Look and Feel 不見得跟這裡一樣 —— 跟代碼鍵同一個理由，
+            // 外觀自己控制才每台一致。
+            verticalSplit.setUI(new BasicSplitPaneUI() {
+                public BasicSplitPaneDivider createDefaultDivider() {
+                    return new Grip(this);
+                }
+            });
+            verticalSplit.setBorder(BorderFactory.createEmptyBorder());
+            verticalSplit.setOpaque(false);
+            verticalSplit.setDividerSize(9);
+            verticalSplit.setContinuousLayout(true);
+            // 不開一鍵收合的小箭頭：觸控螢幕上太容易誤按，一按整塊不見，
+            // 店員只會覺得畫面壞了
+            verticalSplit.setOneTouchExpandable(false);
+            installSplit(verticalSplit);
+            root.add(verticalSplit, BorderLayout.CENTER);
         } else {
             // 浮動視窗是依內容 pack 高度的，套 50/50 只會平白撐高，維持原本的做法
             root.add(upper, BorderLayout.NORTH);
@@ -657,6 +694,110 @@ public final class FloatingPanel {
         if (new SettingsDialog(owner).showDialog()) {
             status.setText("設定已儲存，重開 EPB 後生效");
         }
+    }
+
+    /** 分隔線：一條細線加中間一小截握把，讓人看得出可以上下拖。 */
+    private static final class Grip extends BasicSplitPaneDivider {
+        private static final int HANDLE_WIDTH = 28;
+
+        Grip(BasicSplitPaneUI ui) {
+            super(ui);
+        }
+
+        public void paint(Graphics g) {
+            int w = getWidth();
+            int y = getHeight() / 2;
+            g.setColor(BG);
+            g.fillRect(0, 0, w, getHeight());
+            g.setColor(new Color(0xD8, 0xDC, 0xE3));
+            g.drawLine(0, y, w, y);
+            // 中間畫兩條短線當握把，比一堆小點在低解析度螢幕上清楚
+            g.setColor(new Color(0xA8, 0xAE, 0xB8));
+            int x = (w - HANDLE_WIDTH) / 2;
+            g.drawLine(x, y - 2, x + HANDLE_WIDTH, y - 2);
+            g.drawLine(x, y + 2, x + HANDLE_WIDTH, y + 2);
+        }
+    }
+
+    /**
+     * 套用記住的分隔位置，並在使用者拖過之後存回去。
+     *
+     * 位置存成比例而不是像素：各店螢幕高度不一樣，存像素換一台機器就跑掉。
+     * 第一次拿到高度時才套得上（setDividerLocation(double) 要有高度才算得出來），
+     * 所以等第一次排版完成再套一次。
+     */
+    private void installSplit(final JSplitPane split) {
+        final double ratio = savedSplit();
+        split.setResizeWeight(ratio);
+        split.addComponentListener(new java.awt.event.ComponentAdapter() {
+            private boolean applied;
+
+            public void componentResized(java.awt.event.ComponentEvent event) {
+                if (applied || split.getHeight() <= 0) {
+                    return;
+                }
+                applied = true;
+                Safe.guard("套用分隔位置", new Runnable() {
+                    public void run() {
+                        split.setDividerLocation(ratio);
+                    }
+                });
+            }
+        });
+
+        splitSaver = new Timer(SPLIT_SAVE_DELAY_MS, new ActionListener() {
+            public void actionPerformed(ActionEvent event) {
+                Safe.guard("記住分隔位置", new Runnable() {
+                    public void run() {
+                        saveSplit();
+                    }
+                });
+            }
+        });
+        splitSaver.setRepeats(false);
+
+        split.addPropertyChangeListener(JSplitPane.DIVIDER_LOCATION_PROPERTY,
+            new java.beans.PropertyChangeListener() {
+                public void propertyChange(java.beans.PropertyChangeEvent event) {
+                    // 拖曳過程每動一格就會觸發，停手一秒才真的寫檔
+                    splitSaver.restart();
+                }
+            });
+    }
+
+    /** 讀回上次記住的比例；沒有或壞掉都回預設值。 */
+    private static double savedSplit() {
+        String text = Home.value(STATE_PATH, SPLIT_KEY, "");
+        if (text.length() == 0) {
+            return DEFAULT_SPLIT;
+        }
+        try {
+            return clampSplit(Double.parseDouble(text));
+        } catch (Throwable t) {
+            return DEFAULT_SPLIT;
+        }
+    }
+
+    private static double clampSplit(double value) {
+        if (value < MIN_SPLIT) {
+            return MIN_SPLIT;
+        }
+        return value > MAX_SPLIT ? MAX_SPLIT : value;
+    }
+
+    private void saveSplit() {
+        if (verticalSplit == null) {
+            return;
+        }
+        int span = verticalSplit.getHeight() - verticalSplit.getDividerSize();
+        if (span <= 0) {
+            return;
+        }
+        double ratio = clampSplit(verticalSplit.getDividerLocation() / (double) span);
+        // 只留兩位小數：這是給人看的狀態檔，不需要 17 位浮點數尾巴
+        String body = "# PosAssist 面板狀態（程式自己寫的，刪掉就回預設）\n"
+            + SPLIT_KEY + "=" + (Math.round(ratio * 100) / 100.0) + "\n";
+        Home.write(STATE_PATH, body, false);
     }
 
     /** 側欄拖寬拖窄後，把預約區照新寬度重排一次。沒有預約在顯示就什麼都不做。 */

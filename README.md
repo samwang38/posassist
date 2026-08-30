@@ -55,6 +55,7 @@ macOS 專用。
 | `posassist.properties` | 面板模式、自動更新開關 |
 | `codes.txt` / `codes.txt.bak` | 自訂結帳代碼（分類欄可寫「主分類/子分類」） |
 | `codes.pins.txt` | 釘選置頂的代碼（一行一個代碼） |
+| `panel.state` | 面板記住的狀態（上下分隔位置）。程式自己寫的，刪掉就回預設 |
 
 `*.example` 範本則每次更新覆蓋成最新。
 
