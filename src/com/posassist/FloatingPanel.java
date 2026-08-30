@@ -20,6 +20,8 @@ import java.awt.Toolkit;
 import java.awt.datatransfer.StringSelection;
 import java.awt.event.KeyAdapter;
 import java.awt.event.KeyEvent;
+import java.awt.event.MouseAdapter;
+import java.awt.event.MouseEvent;
 import java.util.List;
 
 import java.text.SimpleDateFormat;
@@ -90,9 +92,9 @@ public final class FloatingPanel {
     private final boolean embeddedMode;
     private final JTextField searchField = new JTextField();
     private final JButton codeValue = codeButton();
-    private final JLabel nameValue = value();
-    private final JLabel phoneValue = value();
-    private final JLabel emailValue = value();
+    private final JLabel nameValue = copyValue();
+    private final JLabel phoneValue = copyValue();
+    private final JLabel emailValue = copyValue();
     private final JLabel levelValue = value();
     private final JLabel lineValue = value();
     private final JLabel status = new JLabel(" ");
@@ -368,6 +370,37 @@ public final class FloatingPanel {
         return label;
     }
 
+    /**
+     * 點一下就把內容複製起來的欄位（姓名、電話、Email）。
+     *
+     * 只放進剪貼簿，不動 POS 的焦點 —— JLabel 本來就不可聚焦，
+     * 店員複製完游標還在 POS 的輸入框上，不必再點一次回去。
+     */
+    private JLabel copyValue() {
+        final JLabel label = value();
+        label.addMouseListener(new MouseAdapter() {
+            public void mouseClicked(MouseEvent event) {
+                Safe.guard("複製會員資料", new Runnable() {
+                    public void run() {
+                        copy(label);
+                    }
+                });
+            }
+        });
+        return label;
+    }
+
+    /** 把欄位內容放進系統剪貼簿。沒內容就當作沒點到，不打擾。 */
+    private void copy(JLabel label) {
+        String text = label.getText();
+        if (text == null || text.length() == 0 || "-".equals(text)) {
+            return;
+        }
+        status.setText(copyToClipboard(text)
+            ? "已複製 " + text
+            : "複製不成功，請手動選取");
+    }
+
     /** 會員代碼做成看起來像連結的按鈕，點一下帶入 POS。 */
     private JButton codeButton() {
         JButton button = new JButton("-");
@@ -496,9 +529,9 @@ public final class FloatingPanel {
         codeValue.setEnabled(true);
         codeValue.setToolTipText("點一下把 " + first.memberCode + " 帶入 POS");
         codeValue.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-        setValue(nameValue, first.name);
-        setValue(phoneValue, first.phone);
-        setValue(emailValue, first.email);
+        setCopyValue(nameValue, first.name);
+        setCopyValue(phoneValue, first.phone);
+        setCopyValue(emailValue, first.email);
         setValue(levelValue, first.level);
         setValue(lineValue, lineStatus(first.remark));
         status.setText(results.size() > 1
@@ -679,13 +712,16 @@ public final class FloatingPanel {
             : "單號已複製，可在 F10 視窗貼上");
     }
 
-    private static void copyToClipboard(final String text) {
-        Safe.guard("複製到剪貼簿", new Runnable() {
-            public void run() {
-                Toolkit.getDefaultToolkit().getSystemClipboard()
-                    .setContents(new StringSelection(text), null);
-            }
-        });
+    /** 複製到剪貼簿。失敗回 false —— 剪貼簿被別的程式鎖住在 Windows 上是常態。 */
+    private static boolean copyToClipboard(final String text) {
+        try {
+            Toolkit.getDefaultToolkit().getSystemClipboard()
+                .setContents(new StringSelection(text), null);
+            return true;
+        } catch (Throwable t) {
+            PosLog.warn("複製到剪貼簿失敗", t);
+            return false;
+        }
     }
 
     /** 用 HTML 讓長品項名換行。文字要跳脫，避免品項名裡的符號被當成標籤。 */
@@ -757,14 +793,23 @@ public final class FloatingPanel {
         label.setToolTipText(empty ? null : text);
     }
 
+    /** 可複製的欄位：有內容才給手指游標，沒內容點下去也不會有事。 */
+    private static void setCopyValue(JLabel label, String text) {
+        setValue(label, text);
+        boolean empty = text == null || text.length() == 0;
+        label.setCursor(Cursor.getPredefinedCursor(
+            empty ? Cursor.DEFAULT_CURSOR : Cursor.HAND_CURSOR));
+        label.setToolTipText(empty ? null : text + "（點一下複製）");
+    }
+
     private void clear(String message) {
         codeValue.setText("-");
         codeValue.setEnabled(false);
         codeValue.setToolTipText(null);
         codeValue.setCursor(Cursor.getDefaultCursor());
-        setValue(nameValue, null);
-        setValue(phoneValue, null);
-        setValue(emailValue, null);
+        setCopyValue(nameValue, null);
+        setCopyValue(phoneValue, null);
+        setCopyValue(emailValue, null);
         setValue(levelValue, null);
         setValue(lineValue, null);
         status.setText(message == null ? " " : message);
