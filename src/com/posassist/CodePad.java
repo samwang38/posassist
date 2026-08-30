@@ -7,6 +7,8 @@ import java.awt.Container;
 import java.awt.Cursor;
 import java.awt.Dimension;
 import java.awt.Font;
+import java.awt.Graphics;
+import java.awt.Graphics2D;
 import java.awt.Insets;
 import java.awt.LayoutManager;
 import java.awt.event.ActionEvent;
@@ -17,6 +19,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import javax.swing.BorderFactory;
+import javax.swing.ButtonModel;
 import javax.swing.BoxLayout;
 import javax.swing.JButton;
 import javax.swing.JLabel;
@@ -55,10 +58,8 @@ public final class CodePad extends JPanel {
      */
     private static final int MIN_CELL = 68;
 
-    private static final Color ACCENT = new Color(0x1D, 0x4E, 0x89);
-    private static final Color MUTED = new Color(0x66, 0x66, 0x70);
-    private static final Color TAB_ON = new Color(0xE8, 0xEF, 0xF8);
-    private static final Color BORDER = new Color(0xC3, 0xC9, 0xD2);
+    private static final Color ACCENT = Style.ACCENT;
+    private static final Color MUTED = Style.MUTED;
 
     private final JPanel tabBar = new JPanel();
     private final JPanel pinnedGrid = new JPanel(new CellGrid()) {
@@ -198,15 +199,14 @@ public final class CodePad extends JPanel {
         tabBar.removeAll();
         for (int i = 0; i < categories.size(); i++) {
             final String category = categories.get(i);
-            JButton tab = new JButton(category);
-            tab.setFont(tab.getFont().deriveFont(11f));
-            tab.setFocusable(false);
-            tab.setMargin(new Insets(2, 6, 2, 6));
             boolean active = category.equals(selectedCategory);
+            JButton tab = new Pill(active);
+            tab.setText(category);
+            tab.setFont(Style.caption(tab.getFont()));
+            tab.setFocusable(false);
+            tab.setBorder(BorderFactory.createEmptyBorder(3, 9, 3, 9));
             tab.setForeground(active ? ACCENT : MUTED);
-            tab.setBackground(active ? TAB_ON : null);
-            tab.setContentAreaFilled(active);
-            tab.setOpaque(active);
+            tab.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
             tab.addActionListener(new ActionListener() {
                 public void actionPerformed(ActionEvent event) {
                     Safe.guard("切換代碼分類", new Runnable() {
@@ -263,9 +263,9 @@ public final class CodePad extends JPanel {
     private JLabel sectionLabel(String text) {
         JLabel label = new JLabel(text);
         label.setForeground(MUTED);
-        label.setFont(label.getFont().deriveFont(11f));
+        label.setFont(Style.caption(label.getFont()));
         label.setAlignmentX(Component.LEFT_ALIGNMENT);
-        label.setBorder(BorderFactory.createEmptyBorder(0, 1, 2, 0));
+        label.setBorder(BorderFactory.createEmptyBorder(0, 2, 3, 0));
         return label;
     }
 
@@ -301,26 +301,23 @@ public final class CodePad extends JPanel {
      * 改成把兩個置中的 JLabel 放進按鈕裡，寬度由我們自己控制，各種 L&F 都一致。
      */
     private JButton keyButton(final CodeItem item) {
-        JButton button = new JButton();
+        JButton button = new Key(item.pinned);
         button.setFocusable(false);
         button.setLayout(new BoxLayout(button, BoxLayout.Y_AXIS));
-        button.setBorder(BorderFactory.createCompoundBorder(
-            BorderFactory.createLineBorder(item.pinned ? ACCENT : BORDER),
-            BorderFactory.createEmptyBorder(3, 1, 3, 1)));
+        // 內距靠 border 給，外框自己畫；不能用 L&F 的邊框，各家厚度差很多
+        button.setBorder(BorderFactory.createEmptyBorder(3, 2, 3, 2));
         button.setMargin(new Insets(0, 0, 0, 0));
         button.setPreferredSize(new Dimension(MIN_CELL, BUTTON_HEIGHT));
         button.setToolTipText(item.name + "（" + item.code + "）點一下帶入 POS，"
             + (item.pinned ? "右鍵可取消釘選" : "右鍵可釘選到最上面"));
         button.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-        if (item.pinned) {
-            button.setBackground(TAB_ON);
-        }
 
         // 上下各留一段可伸縮的空白，剩餘高度平均分掉，文字才會落在格子正中間
         button.add(javax.swing.Box.createVerticalGlue());
 
         JLabel name = new JLabel(item.name);
         name.setFont(name.getFont().deriveFont(Font.BOLD, 11f));
+        name.setForeground(item.pinned ? ACCENT : Style.TEXT);
         name.setAlignmentX(Component.CENTER_ALIGNMENT);
         button.add(name);
 
@@ -486,6 +483,79 @@ public final class CodePad extends JPanel {
                 width = 4 * MIN_CELL + 3 * GAP;   // 還是問不到就先當成 4 欄
             }
             return Math.max(MIN_CELL, width - in.left - in.right);
+        }
+    }
+
+    /**
+     * 代碼鍵：自繪的扁平圓角鍵。
+     *
+     * 不用 L&F 的按鈕外觀 —— Aqua 會畫成有立體感的膠囊，Metal 又是另一種樣子，
+     * 而這個面板要在各店不同的環境上長得一樣。滑過與按下各給一階底色，
+     * 觸控螢幕上「按下去有反應」比滑過重要。
+     */
+    private static final class Key extends JButton {
+        private final boolean pinned;
+
+        Key(boolean pinned) {
+            this.pinned = pinned;
+            setContentAreaFilled(false);
+            setBorderPainted(false);
+            setOpaque(false);
+            setRolloverEnabled(true);
+        }
+
+        protected void paintComponent(Graphics g) {
+            Graphics2D g2 = (Graphics2D) g.create();
+            Style.antialias(g2);
+            int w = getWidth();
+            int h = getHeight();
+            ButtonModel model = getModel();
+
+            Color fill;
+            if (model.isPressed()) {
+                fill = Style.KEY_PRESS;
+            } else if (model.isRollover()) {
+                fill = Style.KEY_HOVER;
+            } else {
+                fill = pinned ? Style.TAB_ON : Style.SURFACE;
+            }
+            g2.setColor(fill);
+            g2.fillRoundRect(0, 0, w - 1, h - 1, Style.RADIUS_KEY, Style.RADIUS_KEY);
+            g2.setColor(pinned ? Style.ACCENT : Style.LINE);
+            g2.drawRoundRect(0, 0, w - 1, h - 1, Style.RADIUS_KEY, Style.RADIUS_KEY);
+            g2.dispose();
+            super.paintComponent(g);
+        }
+    }
+
+    /** 頁籤藥丸。選中的填淺藍底，沒選中的只有文字，滑過才浮出底色。 */
+    private static final class Pill extends JButton {
+        private final boolean active;
+
+        Pill(boolean active) {
+            this.active = active;
+            setContentAreaFilled(false);
+            setBorderPainted(false);
+            setOpaque(false);
+            setRolloverEnabled(true);
+        }
+
+        protected void paintComponent(Graphics g) {
+            Graphics2D g2 = (Graphics2D) g.create();
+            Style.antialias(g2);
+            int w = getWidth();
+            int h = getHeight();
+            if (active) {
+                g2.setColor(Style.TAB_ON);
+                g2.fillRoundRect(0, 0, w - 1, h - 1, h, h);
+                g2.setColor(Style.ACCENT);
+                g2.drawRoundRect(0, 0, w - 1, h - 1, h, h);
+            } else if (getModel().isRollover() || getModel().isPressed()) {
+                g2.setColor(getModel().isPressed() ? Style.KEY_PRESS : Style.KEY_HOVER);
+                g2.fillRoundRect(0, 0, w - 1, h - 1, h, h);
+            }
+            g2.dispose();
+            super.paintComponent(g);
         }
     }
 

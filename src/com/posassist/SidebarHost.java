@@ -46,9 +46,10 @@ public final class SidebarHost {
     private static final int WATCHDOG_INTERVAL_MS = 5000;
     private static final int MAX_SEARCH_DEPTH = 12;
 
-    private static final Color BAR_BG = new Color(0xEC, 0xEF, 0xF3);
-    private static final Color ACCENT = new Color(0x1D, 0x4E, 0x89);
-    private static final Color MUTED = new Color(0x55, 0x5A, 0x63);
+    // 面板卡片化之後，切換列的底色要跟面板同一階，否則兩塊灰對不上
+    private static final Color BAR_BG = Style.PAGE;
+    private static final Color ACCENT = Style.ACCENT;
+    private static final Color MUTED = Style.MUTED;
 
     private final Guard guard;
 
@@ -188,9 +189,13 @@ public final class SidebarHost {
     }
 
     private JButton tab(String text, final String card) {
-        JButton button = new JButton(text);
+        // 跟代碼面板的分類頁籤同一套藥丸樣式，兩處長得一樣才像同一個面板
+        JButton button = new SwitchPill(text);
         button.setFocusable(false);
         button.setFont(button.getFont().deriveFont(12f));
+        button.setBorder(BorderFactory.createEmptyBorder(4, 12, 4, 12));
+        button.setCursor(java.awt.Cursor.getPredefinedCursor(
+            java.awt.Cursor.HAND_CURSOR));
         button.addActionListener(new ActionListener() {
             public void actionPerformed(ActionEvent event) {
                 Safe.guard("切換側欄分頁", new Runnable() {
@@ -219,6 +224,45 @@ public final class SidebarHost {
         }
         button.setForeground(active ? ACCENT : MUTED);
         button.setFont(button.getFont().deriveFont(active ? Font.BOLD : Font.PLAIN, 12f));
+        if (button instanceof SwitchPill) {
+            ((SwitchPill) button).setActive(active);
+        }
+    }
+
+    /** 切換列的藥丸按鈕。選中的填淺藍底，其餘只有文字，滑過才浮出底色。 */
+    private static final class SwitchPill extends JButton {
+        private boolean active;
+
+        SwitchPill(String text) {
+            super(text);
+            setContentAreaFilled(false);
+            setBorderPainted(false);
+            setOpaque(false);
+            setRolloverEnabled(true);
+        }
+
+        void setActive(boolean value) {
+            this.active = value;
+            repaint();
+        }
+
+        protected void paintComponent(java.awt.Graphics g) {
+            java.awt.Graphics2D g2 = (java.awt.Graphics2D) g.create();
+            Style.antialias(g2);
+            int w = getWidth();
+            int h = getHeight();
+            if (active) {
+                g2.setColor(Style.SURFACE);
+                g2.fillRoundRect(0, 0, w - 1, h - 1, h, h);
+                g2.setColor(Style.ACCENT);
+                g2.drawRoundRect(0, 0, w - 1, h - 1, h, h);
+            } else if (getModel().isRollover() || getModel().isPressed()) {
+                g2.setColor(getModel().isPressed() ? Style.KEY_PRESS : Style.KEY_HOVER);
+                g2.fillRoundRect(0, 0, w - 1, h - 1, h, h);
+            }
+            g2.dispose();
+            super.paintComponent(g);
+        }
     }
 
     /** 讓外部（例如面板自己）切回應用程式清單。 */

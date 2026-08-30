@@ -7,6 +7,7 @@ import java.awt.Cursor;
 import java.awt.Dimension;
 import java.awt.Font;
 import java.awt.Graphics;
+import java.awt.Graphics2D;
 import java.awt.GraphicsEnvironment;
 import java.awt.GridBagConstraints;
 import java.awt.GridBagLayout;
@@ -93,9 +94,9 @@ public final class FloatingPanel {
     /** 再窄也不讓品項名擠成一個字一行。 */
     private static final int MIN_WRAP_WIDTH = 120;
 
-    private static final Color BG = new Color(0xF7, 0xF7, 0xF9);
-    private static final Color MUTED = new Color(0x66, 0x66, 0x70);
-    private static final Color ACCENT = new Color(0x1D, 0x4E, 0x89);
+    private static final Color BG = Style.PAGE;
+    private static final Color MUTED = Style.MUTED;
+    private static final Color ACCENT = Style.ACCENT;
 
     /** 嵌入模式時為 null —— 判斷模式一律用 embedded()，不要直接看這個。 */
     private final JDialog dialog;
@@ -111,7 +112,7 @@ public final class FloatingPanel {
     private final JLabel phoneValue = copyValue();
     private final JLabel emailValue = copyValue();
     private final JLabel levelValue = value();
-    private final JLabel lineValue = value();
+    private final JLabel lineValue = new Tag();
     private final JLabel status = new JLabel(" ");
     private final JLabel footer = new JLabel(" ");
 
@@ -138,6 +139,8 @@ public final class FloatingPanel {
     private int lastWrapWidth = -1;
     /** 嵌入模式的上下分隔；浮動視窗模式是 null。 */
     private JSplitPane verticalSplit;
+    /** 預約區外面那張卡片；預約區隱藏時整張要跟著收掉，不然會留一塊空白卡片。 */
+    private JPanel reservationCardHolder;
     private Timer splitSaver;
 
     /** 浮動視窗模式：自己開一個置頂、不搶焦點的視窗，並追蹤 POSN 位置。 */
@@ -209,18 +212,34 @@ public final class FloatingPanel {
         fields.setAlignmentX(Component.LEFT_ALIGNMENT);
 
         status.setForeground(MUTED);
-        status.setFont(status.getFont().deriveFont(11f));
+        status.setFont(Style.caption(status.getFont()));
         status.setAlignmentX(Component.LEFT_ALIGNMENT);
+
+        // 會員資料與預約各自一張白卡片，浮在較深的底色上，層次才分得開。
+        // 代碼區刻意不包卡片：那一區本來就是滿版的格子，包起來拿到的層次最少，
+        // 付出的內距卻會讓 400px 寬的側欄一列從 5 個掉到 4 個。
+        JPanel memberCard = new Card();
+        memberCard.setLayout(new BoxLayout(memberCard, BoxLayout.Y_AXIS));
+        memberCard.setAlignmentX(Component.LEFT_ALIGNMENT);
+        JPanel search = buildSearchArea();
+        search.setAlignmentX(Component.LEFT_ALIGNMENT);
+        memberCard.add(search);
+        memberCard.add(Box.createVerticalStrut(8));
+        memberCard.add(fields);
+
+        JPanel reservationCard = new Card();
+        reservationCard.setLayout(new BorderLayout());
+        reservationCard.setAlignmentX(Component.LEFT_ALIGNMENT);
+        reservationCard.add(buildReservationBox(), BorderLayout.CENTER);
+        reservationCardHolder = reservationCard;
+        reservationCard.setVisible(false);
 
         JPanel upper = new JPanel();
         upper.setOpaque(false);
         upper.setLayout(new BoxLayout(upper, BoxLayout.Y_AXIS));
-        JPanel search = buildSearchArea();
-        search.setAlignmentX(Component.LEFT_ALIGNMENT);
-        upper.add(search);
-        upper.add(Box.createVerticalStrut(8));
-        upper.add(fields);
-        upper.add(buildReservationBox());
+        upper.add(memberCard);
+        upper.add(Box.createVerticalStrut(Style.GAP));
+        upper.add(reservationCard);
         upper.add(Box.createVerticalStrut(4));
         upper.add(status);
 
@@ -429,7 +448,8 @@ public final class FloatingPanel {
 
     private static JLabel value() {
         JLabel label = new JLabel("-");
-        label.setFont(label.getFont().deriveFont(Font.BOLD, 13f));
+        label.setFont(Style.value(label.getFont()));
+        label.setForeground(Style.TEXT);
         return label;
     }
 
@@ -459,9 +479,9 @@ public final class FloatingPanel {
         if (text == null || text.length() == 0 || "-".equals(text)) {
             return;
         }
-        status.setText(copyToClipboard(text)
-            ? "已複製 " + text
-            : "複製不成功，請手動選取");
+        boolean copied = copyToClipboard(text);
+        say(copied ? "已複製 " + text : "複製不成功，請手動選取",
+            copied ? ACCENT : Style.DANGER);
     }
 
     /** 會員代碼做成看起來像連結的按鈕，點一下帶入 POS。 */
@@ -548,7 +568,7 @@ public final class FloatingPanel {
 
     /** fromSearch 區分結果來自使用者輸入框，還是 POS 上的會員自動跟隨。 */
     private void lookupAsync(final String key, final boolean fromSearch) {
-        status.setText("查詢中...");
+        say("查詢中...", MUTED);
         final int sequence = ++querySequence;
         new SwingWorker<VipLookup.Outcome, Void>() {
             protected VipLookup.Outcome doInBackground() {
@@ -643,7 +663,7 @@ public final class FloatingPanel {
             reservationList.add(more);
         }
 
-        reservationBox.setVisible(true);
+        showReservationBox(true);
         relayout();
     }
 
@@ -683,7 +703,7 @@ public final class FloatingPanel {
         row.add(link);
 
         reservationList.add(row);
-        reservationBox.setVisible(true);
+        showReservationBox(true);
         relayout();
     }
 
@@ -693,6 +713,67 @@ public final class FloatingPanel {
             : dialog;
         if (new SettingsDialog(owner).showDialog()) {
             status.setText("設定已儲存，重開 EPB 後生效");
+        }
+    }
+
+    /**
+     * 有底色的小標籤。目前用在「LINE會員」：有綁定才浮出藥丸，
+     * 沒有的話就是一個普通的「-」，不要讓空狀態也長出一塊色塊。
+     */
+    private static final class Tag extends JLabel {
+
+        Tag() {
+            setText("-");
+            setForeground(Style.ACCENT);
+            setBorder(BorderFactory.createEmptyBorder(1, 7, 1, 7));
+        }
+
+        private boolean filled() {
+            String text = getText();
+            return text != null && text.length() > 0 && !"-".equals(text);
+        }
+
+        public Insets getInsets() {
+            // 沒內容時不要留藥丸的內距，否則「-」會比其他欄位往右一截
+            return filled() ? super.getInsets() : new Insets(1, 0, 1, 0);
+        }
+
+        protected void paintComponent(Graphics g) {
+            if (filled()) {
+                Graphics2D g2 = (Graphics2D) g.create();
+                Style.antialias(g2);
+                // 只包住文字：欄位是用 GridBag 拉滿寬度的，
+                // 直接用 getWidth() 會畫成一條橫跨整列的色帶
+                int pill = Math.min(getPreferredSize().width, getWidth()) - 1;
+                g2.setColor(Style.TAB_ON);
+                g2.fillRoundRect(0, 0, pill, getHeight() - 1,
+                    getHeight(), getHeight());
+                g2.dispose();
+            }
+            super.paintComponent(g);
+        }
+    }
+
+    /** 白色圓角卡片。自繪而不是用 L&F 的邊框，各家厚度與顏色差太多。 */
+    private static final class Card extends JPanel {
+
+        Card() {
+            setOpaque(false);
+            setBorder(BorderFactory.createEmptyBorder(
+                Style.PAD, Style.PAD, Style.PAD, Style.PAD));
+        }
+
+        protected void paintComponent(Graphics g) {
+            Graphics2D g2 = (Graphics2D) g.create();
+            Style.antialias(g2);
+            int w = getWidth();
+            int h = getHeight();
+            g2.setColor(Style.SURFACE);
+            g2.fillRoundRect(0, 0, w - 1, h - 1, Style.RADIUS_CARD, Style.RADIUS_CARD);
+            g2.setColor(Style.LINE);
+            g2.drawRoundRect(0, 0, w - 1, h - 1, Style.RADIUS_CARD, Style.RADIUS_CARD);
+            g2.dispose();
+            super.paintComponent(g);
         }
     }
 
@@ -800,6 +881,20 @@ public final class FloatingPanel {
         Home.write(STATE_PATH, body, false);
     }
 
+    /** 狀態列訊息。成功用主色、失敗用紅色，其餘維持次要文字色。 */
+    private void say(String text, Color color) {
+        status.setForeground(color);
+        status.setText(text);
+    }
+
+    /** 預約區與外面那張卡片一起顯示或隱藏，免得留下一張空白卡片。 */
+    private void showReservationBox(boolean visible) {
+        reservationBox.setVisible(visible);
+        if (reservationCardHolder != null) {
+            reservationCardHolder.setVisible(visible);
+        }
+    }
+
     /** 側欄拖寬拖窄後，把預約區照新寬度重排一次。沒有預約在顯示就什麼都不做。 */
     private void reflowReservations() {
         if (reservationVip.length() == 0 || !reservationBox.isVisible()) {
@@ -816,7 +911,7 @@ public final class FloatingPanel {
         if (!reservationBox.isVisible()) {
             return;
         }
-        reservationBox.setVisible(false);
+        showReservationBox(false);
         reservationList.removeAll();
         relayout();
     }
@@ -1007,7 +1102,7 @@ public final class FloatingPanel {
         setCopyValue(emailValue, null);
         setValue(levelValue, null);
         setValue(lineValue, null);
-        status.setText(message == null ? " " : message);
+        say(message == null ? " " : message, MUTED);
         hideReservations();
     }
 
@@ -1019,13 +1114,13 @@ public final class FloatingPanel {
             return;
         }
         if (applier == null) {
-            status.setText("這個畫面不支援帶入");
+            say("這個畫面不支援帶入", Style.DANGER);
             return;
         }
         // 帶入之後 POSN 會在焦點離開會員欄時同步做驗證與載入（跑在 EDT 上），
         // 那段時間整個畫面都會停住。先把「帶入中」逼著畫出來，
         // 店員才知道是在等，而不是以為 POS 當掉了。
-        status.setText("帶入中…");
+        say("帶入中…", MUTED);
         status.paintImmediately(0, 0, status.getWidth(), status.getHeight());
 
         long startedAt = System.currentTimeMillis();
@@ -1034,7 +1129,8 @@ public final class FloatingPanel {
         PosLog.info("帶入會員代碼 " + (ok ? "完成" : "被拒絕") + "，耗時 " + ms
             + "ms（含 POSN 自己的驗證與載入）");
 
-        status.setText(ok ? "已帶入 POS：" + code : "POS 目前不接受帶入");
+        say(ok ? "已帶入 POS：" + code : "POS 目前不接受帶入",
+            ok ? ACCENT : Style.DANGER);
         if (ok) {
             searchField.setText("");
         }
