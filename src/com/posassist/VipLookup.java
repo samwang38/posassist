@@ -89,22 +89,42 @@ public final class VipLookup {
         }
     }
 
+    /**
+     * 查詢結果的種類。message 是給店員看的，這個是給程式判斷的 —— 「查無」跟
+     * 「查詢失敗」在畫面上都只是一行字，但能不能談建立會員完全是兩回事。
+     */
+    public enum Status {
+        /** 查到了，results 非空。 */
+        FOUND,
+        /** 查詢跑完了，資料庫裡確實沒有。只有這個狀態可以談建立會員。 */
+        NOT_FOUND,
+        /** 符合的太多，超過 MAX_RESULTS。資料庫裡有，只是沒篩乾淨。 */
+        TOO_MANY,
+        /** 查詢沒跑完（連線斷、SQL 失敗）。不知道有沒有，一律當作有。 */
+        FAILED,
+        /** 輸入不成立，根本沒送出查詢。 */
+        BAD_INPUT
+    }
+
     public static final class Outcome {
         public final List<Vip> results;
         /** 非 null 代表要顯示的訊息（查無、太多筆、查詢失敗），此時 results 為空。 */
         public final String message;
+        /** 永遠非 null。要判斷「是不是真的查無」用這個，不要去比對 message 字串。 */
+        public final Status status;
 
-        private Outcome(List<Vip> results, String message) {
+        private Outcome(List<Vip> results, String message, Status status) {
             this.results = results;
             this.message = message;
+            this.status = status;
         }
 
         static Outcome of(List<Vip> results) {
-            return new Outcome(results, null);
+            return new Outcome(results, null, Status.FOUND);
         }
 
-        static Outcome message(String message) {
-            return new Outcome(new ArrayList<Vip>(), message);
+        static Outcome message(String message, Status status) {
+            return new Outcome(new ArrayList<Vip>(), message, status);
         }
     }
 
@@ -165,7 +185,7 @@ public final class VipLookup {
         String text = input == null ? "" : input.trim();
         if (text.length() < 3 || text.length() > 40
             || text.indexOf('\n') >= 0 || text.indexOf('\r') >= 0) {
-            return Outcome.message("請輸入會員電話或會員代碼");
+            return Outcome.message("請輸入會員電話或會員代碼", Status.BAD_INPUT);
         }
 
         Set<String> codes = new LinkedHashSet<String>();
@@ -182,7 +202,7 @@ public final class VipLookup {
         }
 
         if (codes.isEmpty() && phones.isEmpty()) {
-            return Outcome.message("請輸入會員電話或會員代碼");
+            return Outcome.message("請輸入會員電話或會員代碼", Status.BAD_INPUT);
         }
 
         // 分段計時：要能一眼看出慢的是精確查詢、備援、還是組裝
@@ -191,7 +211,7 @@ public final class VipLookup {
         long exactMs = System.currentTimeMillis() - startedAt;
         if (rows == null) {
             timing(codes, phones, exactMs, rows, -1, null, startedAt);
-            return Outcome.message("查詢無法完成，請稍後再試");
+            return Outcome.message("查詢無法完成，請稍後再試", Status.FAILED);
         }
 
         long fallbackMs = -1;
@@ -204,7 +224,7 @@ public final class VipLookup {
             fallbackMs = System.currentTimeMillis() - fallbackAt;
             if (rows == null) {
                 timing(codes, phones, exactMs, rows, fallbackMs, null, startedAt);
-                return Outcome.message("查詢無法完成，請稍後再試");
+                return Outcome.message("查詢無法完成，請稍後再試", Status.FAILED);
             }
         }
 
@@ -411,13 +431,26 @@ public final class VipLookup {
     }
 
     /** 登入中的 ORG_ID；取不到就退回 01。 */
-    private static String sessionOrgId() {
+    static String sessionOrgId() {
         Object orgId = Safe.staticCall(SHARED, "getOrgId", new Class<?>[0], new Object[0]);
         if (orgId == null) {
             return DEFAULT_ORG_ID;
         }
         String text = String.valueOf(orgId).trim();
         return text.length() == 0 ? DEFAULT_ORG_ID : text;
+    }
+
+    /**
+     * 登入中的 LOC_ID。跟 ORG_ID 不同，這個沒有能猜的預設值 —— 猜錯會讀到別家
+     * 門市的設定，所以取不到就回 null，由呼叫端決定要不要降級。
+     */
+    static String sessionLocId() {
+        Object locId = Safe.staticCall(SHARED, "getLocId", new Class<?>[0], new Object[0]);
+        if (locId == null) {
+            return null;
+        }
+        String text = String.valueOf(locId).trim();
+        return text.length() == 0 ? null : text;
     }
 
     /** 在資料庫端把電話正規化成比對用字串。只用 Postgres 與 Oracle 都有的函式。 */
@@ -440,7 +473,7 @@ public final class VipLookup {
     }
 
     /** 走 EPB 已登入的連線。查詢失敗回 null，跟「查無資料」的空 list 區分開。 */
-    private static List<Vector> query(String sql, List<Object> params) {
+    static List<Vector> query(String sql, List<Object> params) {
         return query(sql, params, MAX_RESULTS + 1);
     }
 
@@ -466,7 +499,7 @@ public final class VipLookup {
 
     private static Outcome toOutcome(List<Vector> rows, String canonicalPhone) {
         if (rows.size() > MAX_RESULTS) {
-            return Outcome.message("符合的會員太多，請輸入更完整的資料");
+            return Outcome.message("符合的會員太多，請輸入更完整的資料", Status.TOO_MANY);
         }
 
         List<Vip> results = new ArrayList<Vip>();
@@ -493,7 +526,7 @@ public final class VipLookup {
         }
 
         if (results.isEmpty()) {
-            return Outcome.message("查無此會員");
+            return Outcome.message("查無此會員", Status.NOT_FOUND);
         }
         return Outcome.of(results);
     }

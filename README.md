@@ -94,7 +94,8 @@ macOS 專用。
   `build.command` 刻意不帶任何 EPB classpath。EPB 改版少了某個欄位時，
   外掛只會少顯示一項，不會炸掉結帳畫面。
 - **不寫入 EPB 任何資料**：只跑 `SELECT`。帶入 POS 是填欄位再送 Enter，
-  由 POSN 自己驗證，跟店員手打完全同一條路徑。
+  由 POSN 自己驗證，跟店員手打完全同一條路徑。會員建立輔助也不例外：
+  外掛只整理資料並開啟原生 `POSVIP`，實際新增全部由店員在原生畫面送出。
 - **不碰原廠檔案**：`Shell/lib/`、`shell.jar`、`appcfg/` 都會被 EPB 的 patch 覆蓋。
 - **面板不搶鍵盤焦點**：否則條碼掃描器的輸入會跑進面板而不是 POS。
 - **SQL 只用 Postgres 與 Oracle 都有的語法**：`EpbApplicationUtility.getResultList`

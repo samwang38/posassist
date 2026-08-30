@@ -33,6 +33,18 @@ autoUpdate=true
 # 純粹是排效能問題用的，不影響查詢結果，也不會把電話或姓名寫進 log。
 #vipDiagnose=false
 
+# 會員建立輔助（true / false，預設 false，還在試行）。
+# 開啟後，查詢「確定查無」這支電話時，側欄會多一個「建立會員」入口：
+# 填姓名／電話／Email／生日 → 照這家門市的 POSVIP 設定先驗一次（手機碼數、
+# 姓名是否要唯一、Email 格式）→ 整理成逐欄複製的樣子 → 開啟 EPB 原生 POSVIP。
+#
+# PosAssist 不會建立任何會員：新增是店員自己在原生畫面按新增、貼上、送出的，
+# 走 EPB 自己的驗證。查詢失敗（連線斷、SQL 錯）時不會出現這個入口 ——
+# 那正是最可能建出重複會員的時候。
+#
+# 要停用就設回 false 並重開 EPB。已經由原生 POSVIP 建好的會員不受影響。
+#enableVipCreate=true
+
 # 帶入會員後，焦點要回到 POS 的哪個欄位。預設是品項/條碼輸入欄。
 # 只有版面不同的門市才需要改。
 #posInputField=pluIdTextField

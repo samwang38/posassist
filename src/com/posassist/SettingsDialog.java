@@ -11,6 +11,11 @@ import java.awt.Insets;
 import java.awt.Window;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.Properties;
 
 import javax.swing.BorderFactory;
@@ -54,6 +59,8 @@ public final class SettingsDialog {
     private final JRadioButton embeddedRadio = new JRadioButton("嵌進 EPB 左側欄");
     private final JRadioButton floatingRadio = new JRadioButton("獨立浮動視窗");
     private final JCheckBox autoUpdateBox = new JCheckBox("開啟時自動更新到最新版");
+    private final JCheckBox enableVipCreateBox =
+        new JCheckBox("會員建立輔助（試用）");
     private final JLabel passwordHint = new JLabel(" ");
     private final JLabel message = new JLabel(" ");
     private final JButton testButton = new JButton("測試連線");
@@ -118,6 +125,10 @@ public final class SettingsDialog {
         boolean autoUpdate = panel == null
             || !"false".equalsIgnoreCase(panel.getProperty("autoUpdate", "true").trim());
         autoUpdateBox.setSelected(autoUpdate);
+        // 這個跟 autoUpdate 相反，預設關閉：會員建立還在試行，要門市自己開
+        boolean vipCreate = panel != null
+            && "true".equalsIgnoreCase(panel.getProperty("enableVipCreate", "false").trim());
+        enableVipCreateBox.setSelected(vipCreate);
     }
 
     // -- 版面 --------------------------------------------------------------
@@ -154,6 +165,12 @@ public final class SettingsDialog {
         modes.add(floatingRadio);
         addRow(form, row++, "顯示位置", modes);
         addRow(form, row++, "更新", autoUpdateBox);
+        addRow(form, row++, "建立會員", enableVipCreateBox);
+        JLabel vipCreateHint = new JLabel(
+            "查無會員時多一個入口，整理好資料後開啟 EPB 原生會員畫面。資料一律由店員自己送出。");
+        vipCreateHint.setForeground(MUTED);
+        vipCreateHint.setFont(vipCreateHint.getFont().deriveFont(11f));
+        addHint(form, row - 1, vipCreateHint);
 
         root.add(form, BorderLayout.CENTER);
 
@@ -362,12 +379,42 @@ public final class SettingsDialog {
         return Home.write(RESERVATION_PATH, body.toString(), true);
     }
 
+    /**
+     * 寫回一般設定。
+     *
+     * 只覆蓋這個視窗管得到的 key，其餘原封不動抄回去 —— 門市可能自己加了
+     * vipDiagnose、startEpbHelper 這些畫面上沒有的設定，整份重寫會把它們洗掉，
+     * 而且是存一次設定就悄悄消失，現場很難聯想到原因。
+     */
     private String writePanel() {
+        Map<String, String> managed = new LinkedHashMap<String, String>();
+        managed.put("panelMode", floatingRadio.isSelected() ? "floating" : "embedded");
+        managed.put("autoUpdate", String.valueOf(autoUpdateBox.isSelected()));
+        managed.put("enableVipCreate", String.valueOf(enableVipCreateBox.isSelected()));
+
         StringBuilder body = new StringBuilder();
         body.append("# PosAssist 一般設定（由設定視窗產生）\n\n");
-        body.append("panelMode=")
-            .append(floatingRadio.isSelected() ? "floating" : "embedded").append('\n');
-        body.append("autoUpdate=").append(autoUpdateBox.isSelected()).append('\n');
+        for (Map.Entry<String, String> entry : managed.entrySet()) {
+            body.append(entry.getKey()).append('=').append(entry.getValue()).append('\n');
+        }
+
+        Properties existing = Home.props(PANEL_PATH);
+        if (existing != null) {
+            List<String> others = new ArrayList<String>(existing.stringPropertyNames());
+            Collections.sort(others);
+            boolean first = true;
+            for (String key : others) {
+                if (managed.containsKey(key)) {
+                    continue;
+                }
+                if (first) {
+                    body.append("\n# 以下是設定視窗沒有的項目，照原樣保留\n");
+                    first = false;
+                }
+                body.append(escape(key)).append('=')
+                    .append(escape(existing.getProperty(key, ""))).append('\n');
+            }
+        }
         return Home.write(PANEL_PATH, body.toString(), false);
     }
 

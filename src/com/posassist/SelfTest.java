@@ -192,6 +192,41 @@ public final class SelfTest {
         phone("", null);
 
         System.out.println();
+        System.out.println("[10] 會員建立輔助（PosAssist 只開原生畫面，不寫入任何資料）");
+        // 開原生 POSVIP 用的兩支公開方法。3 參數的 checkPrivilege 會自己補 LOC_ID，
+        // 跟 POSVIP 自己判斷 isNewAllowed 是同一條路
+        staticMethod("com.ipt.epbtls.EpbApplicationUtility", "checkPrivilege",
+            String.class, String.class, String.class);
+        staticMethod("com.ipt.epbtls.EpbApplicationUtility", "callEpbApplication",
+            String.class, java.util.Map.class);
+        // 門市規則（手機碼數、姓名唯一、Email 檢查）跟原生讀同一支，順序才會一致
+        staticMethod("com.epb.persistence.utl.BusinessUtility", "getAppSetting",
+            String.class, String.class, String.class, String.class);
+        sqlPortable("姓名重複", PosVipRules.nameConflictSql());
+        bindCount("姓名重複", PosVipRules.nameConflictSql(), 1);
+
+        draft("姓名必填", "", "0912345678", "", "", 0, false);
+        draft("姓名不得超過上限", repeat("陳", VipCreateDraft.MAX_NAME + 1),
+            "0912345678", "", "", 0, false);
+        draft("最短的合格資料", "陳小明", "0912345678", "", "", 0, true);
+        draft("電話格式不對", "陳小明", "abcdefgh", "", "", 0, false);
+        draft("電話碼數不符門市設定", "陳小明", "091234567", "", "", 10, false);
+        draft("電話碼數符合門市設定", "陳小明", "0912345678", "", "", 10, true);
+        draft("沒設定碼數就不檢查", "陳小明", "091234567", "", "", 0, true);
+        draft("Email 缺 @", "陳小明", "0912345678", "abc.example.com", "", 0, false);
+        draft("Email 網域沒有點", "陳小明", "0912345678", "abc@example", "", 0, false);
+        draft("Email 正常", "陳小明", "0912345678", "abc@example.com", "", 0, true);
+        draft("閏年 2 月 29 日", "陳小明", "0912345678", "", "2024-02-29", 0, true);
+        draft("非閏年沒有 2 月 29 日", "陳小明", "0912345678", "", "2023-02-29", 0, false);
+        draft("百年不閏", "陳小明", "0912345678", "", "1900-02-29", 0, false);
+        draft("四百年又閏", "陳小明", "0912345678", "", "2000-02-29", 0, true);
+        draft("月份不合理", "陳小明", "0912345678", "", "1990-13-01", 0, false);
+        draft("生日不能晚於今天", "陳小明", "0912345678", "", "2026-12-31", 0, false);
+        draft("生日就是今天", "陳小明", "0912345678", "", "2026-08-31", 0, true);
+        draft("生日格式必須是 YYYY-MM-DD", "陳小明", "0912345678", "", "1990/01/01", 0, false);
+        draft("生日選填", "陳小明", "0912345678", "", "", 0, true);
+
+        System.out.println();
         System.out.println("========================================");
         if (FAILURES.isEmpty()) {
             System.out.println("結果：全部通過（" + checks + " 項）");
@@ -288,6 +323,31 @@ public final class SelfTest {
         }
         // 補接功能才用得到，缺了只是少一個保險，不算致命
         record("內部欄位 " + simple(className) + "." + fieldName + "（補接用）", ok);
+    }
+
+    /**
+     * 建立草稿的驗證。
+     *
+     * 「今天」固定成一個值，未來生日那條規則才驗得穩 —— 用真的今天的話，
+     * 測試案例會隨著日曆自己失效。
+     */
+    private static final int[] TODAY = { 2026, 8, 31 };
+
+    private static void draft(String label, String name, String phone, String email,
+                              String birthday, int phoneLength, boolean expected) {
+        VipCreateDraft.Result result = VipCreateDraft.of(
+            name, phone, email, birthday, phoneLength, TODAY);
+        boolean ok = result.ok() == expected;
+        record("草稿 " + label
+            + (ok ? "" : "（實得：" + (result.ok() ? "通過" : result.error) + "）"), ok);
+    }
+
+    private static String repeat(String unit, int times) {
+        StringBuilder out = new StringBuilder();
+        for (int i = 0; i < times; i++) {
+            out.append(unit);
+        }
+        return out.toString();
     }
 
     /** 單邊專有的語法一律不准出現，否則換一台資料庫就炸。 */
