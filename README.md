@@ -53,7 +53,8 @@ macOS 專用。
 |---|---|
 | `reservation.properties` | 預約系統帳密（權限 600） |
 | `posassist.properties` | 面板模式、自動更新開關 |
-| `codes.txt` / `codes.txt.bak` | 自訂結帳代碼 |
+| `codes.txt` / `codes.txt.bak` | 自訂結帳代碼（分類欄可寫「主分類/子分類」） |
+| `codes.pins.txt` | 釘選置頂的代碼（一行一個代碼） |
 
 `*.example` 範本則每次更新覆蓋成最新。
 
@@ -113,6 +114,6 @@ macOS 專用。
 ## 安全性須知
 
 - 這個 repo 是公開的，**絕對不要把 `config/` 底下任何真實設定檔提交進來**。
-  `.gitignore` 以檔名擋掉 `reservation.properties`、`codes.txt` 等，但提交前仍請看一眼 `git status`。
+  `.gitignore` 以檔名擋掉 `reservation.properties`、`codes.txt`、`codes.pins.txt` 等，但提交前仍請看一眼 `git status`。
 - 自動更新意味著能改這個 repo 的人，就能在每一台安裝了 PosAssist 的 POS 上執行程式。
   這是刻意的取捨；不接受的門市可以關掉 `autoUpdate`。

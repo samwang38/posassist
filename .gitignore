@@ -6,6 +6,7 @@ reservation.properties
 posassist.properties
 codes.txt
 codes.txt.bak
+codes.pins.txt
 
 # 萬一有人把部署目錄整包複製進來
 /config/

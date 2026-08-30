@@ -84,7 +84,8 @@ public final class SelfTest {
         System.out.println("[6] 結帳代碼");
         System.out.println("       清單：" + (CodeStore.exists()
             ? CodeStore.load().size() + " 筆，"
-              + CodeStore.categories(CodeStore.load()).size() + " 個分類"
+              + CodeStore.categories(CodeStore.load()).size() + " 個分類，"
+              + CodeStore.pinned(CodeStore.load()).size() + " 筆釘選"
             : "未設定（面板會提示按編輯新增）"));
         // 欄位規則：分隔符號是 |，所以三個欄位都不能含它
         codeValid("常用|環保紙袋|07310011 可用", "常用", "環保紙袋", "07310011", true);
@@ -94,6 +95,39 @@ public final class SelfTest {
         codeValid("代碼含 | 要擋", "常用", "紙袋", "073|11", false);
         record("註解行會被略過", CodeItem.parse("# 註解") == null);
         record("欄位不足的行會被略過", CodeItem.parse("常用|只有兩欄") == null);
+        // 釘選存在 codes.pins.txt，代碼行維持三欄，舊版本讀得懂
+        record("釘選不會多寫一欄進 codes.txt",
+            "常用|紙袋|07310011".equals(
+                new CodeItem("常用", "紙袋", "07310011", true).toLine()));
+        // 子分類寫在分類欄裡：配件/袋類
+        CodeItem twoLevel = new CodeItem("配件/袋類", "環保紙袋", "07310011");
+        record("子分類切得出主分類",
+            "配件".equals(twoLevel.category) && "袋類".equals(twoLevel.sub));
+        record("子分類寫回去還是原本那一行",
+            "配件/袋類|環保紙袋|07310011".equals(twoLevel.toLine()));
+        record("沒有 / 時子分類是空的",
+            "".equals(new CodeItem("配件", "保護殼", "07320111").sub));
+        record("子分類不能再分層",
+            !new CodeItem("配件/袋類/紙袋", "環保紙袋", "07310011").isValid());
+
+        List<CodeItem> mixed = new ArrayList<CodeItem>();
+        mixed.add(new CodeItem("配件/包膜", "全機包膜", "07320200"));
+        mixed.add(new CodeItem("配件", "保護殼", "07320111"));
+        mixed.add(new CodeItem("配件/袋類", "環保紙袋", "07310011"));
+        List<String> subs = CodeStore.subCategories(mixed, "配件");
+        record("沒填子分類的那段排最前面",
+            subs.size() == 3 && "".equals(subs.get(0))
+            && "包膜".equals(subs.get(1)) && "袋類".equals(subs.get(2)));
+        record("依主分類加子分類取得項目",
+            CodeStore.inCategory(mixed, "配件", "袋類").size() == 1
+            && CodeStore.inCategory(mixed, "配件", "").size() == 1);
+
+        List<CodeItem> onlyPinned = new ArrayList<CodeItem>();
+        onlyPinned.add(new CodeItem("配件", "傳輸線", "07320112", true));
+        record("整個分類都被釘選時不留空頁籤",
+            CodeStore.categories(onlyPinned).isEmpty());
+        record("釘選的不會在分類裡再列一次",
+            CodeStore.inCategory(onlyPinned, "配件").isEmpty());
 
         System.out.println();
         System.out.println("[7] 預約整合");

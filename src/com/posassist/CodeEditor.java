@@ -28,7 +28,9 @@ import javax.swing.table.AbstractTableModel;
  */
 public final class CodeEditor {
 
-    private static final String[] COLUMNS = { "分類", "名稱", "代碼" };
+    private static final String[] COLUMNS =
+        { "主分類", "子分類", "名稱", "代碼", "釘選" };
+    private static final int PIN_COLUMN = 4;
 
     private final JDialog dialog;
     private final Model model;
@@ -45,14 +47,17 @@ public final class CodeEditor {
         table.setSelectionMode(ListSelectionModel.SINGLE_SELECTION);
         table.getTableHeader().setReorderingAllowed(false);
         table.putClientProperty("terminateEditOnFocusLost", Boolean.TRUE);
-        table.getColumnModel().getColumn(0).setPreferredWidth(80);
-        table.getColumnModel().getColumn(1).setPreferredWidth(180);
-        table.getColumnModel().getColumn(2).setPreferredWidth(120);
+        table.getColumnModel().getColumn(0).setPreferredWidth(60);
+        table.getColumnModel().getColumn(1).setPreferredWidth(60);
+        table.getColumnModel().getColumn(2).setPreferredWidth(150);
+        table.getColumnModel().getColumn(3).setPreferredWidth(105);
+        table.getColumnModel().getColumn(PIN_COLUMN).setPreferredWidth(40);
+        table.getColumnModel().getColumn(PIN_COLUMN).setMaxWidth(50);
 
         dialog = new JDialog(owner, "編輯結帳代碼", JDialog.ModalityType.APPLICATION_MODAL);
         dialog.setDefaultCloseOperation(JDialog.DO_NOTHING_ON_CLOSE);
         dialog.setContentPane(buildContent());
-        dialog.setSize(520, 420);
+        dialog.setSize(560, 420);
         dialog.setLocationRelativeTo(owner);
         dialog.addWindowListener(new java.awt.event.WindowAdapter() {
             public void windowClosing(java.awt.event.WindowEvent event) {
@@ -78,12 +83,14 @@ public final class CodeEditor {
         root.setBorder(BorderFactory.createEmptyBorder(10, 10, 10, 10));
 
         JLabel hint = new JLabel(
-            "表格順序就是面板上的顯示順序；分類相同的會排在同一個頁籤。");
+            "<html>表格順序就是面板上的顯示順序；主分類相同的會排在同一個頁籤，"
+            + "子分類會在頁籤底下分段（留白就是不分段）。<br>"
+            + "勾「釘選」的會固定顯示在面板最上面，不受切換分類影響。</html>");
         hint.setFont(hint.getFont().deriveFont(11f));
         root.add(hint, BorderLayout.NORTH);
 
         JScrollPane scroller = new JScrollPane(table);
-        scroller.setPreferredSize(new Dimension(480, 260));
+        scroller.setPreferredSize(new Dimension(520, 260));
         root.add(scroller, BorderLayout.CENTER);
 
         JPanel south = new JPanel(new BorderLayout(0, 6));
@@ -102,10 +109,10 @@ public final class CodeEditor {
         bar.add(button("新增", new Runnable() {
             public void run() {
                 stopEditing();
-                model.add(new CodeItem(currentCategory(), "", ""));
+                model.add(currentCategory());
                 int row = model.getRowCount() - 1;
                 table.setRowSelectionInterval(row, row);
-                table.editCellAt(row, 1);
+                table.editCellAt(row, 2);
                 dirty = true;
             }
         }));
@@ -190,6 +197,13 @@ public final class CodeEditor {
         }
         saved = true;
         dirty = false;
+        // 釘選是另一個檔：代碼已經存進去了，這裡失敗只是少了置頂，
+        // 所以留在畫面上把話說清楚，讓人自己決定要不要再存一次
+        String pinProblem = CodeStore.savePins(items);
+        if (pinProblem != null) {
+            message.setText("代碼已儲存，但釘選沒存起來：" + pinProblem);
+            return;
+        }
         dialog.dispose();
     }
 
@@ -213,27 +227,38 @@ public final class CodeEditor {
         }
     }
 
-    private String currentCategory() {
-        int row = table.getSelectedRow();
-        if (row >= 0) {
-            return model.snapshot().get(row).category;
-        }
+    /**
+     * 新增列時要沿用的分類。連續建同一區的代碼是常態，主分類與子分類都跟著
+     * 選取列（沒選就跟最後一列），店員不用每一筆重打。
+     */
+    private CodeItem currentCategory() {
         List<CodeItem> items = model.snapshot();
-        return items.isEmpty()
-            ? CodeItem.DEFAULT_CATEGORY
-            : items.get(items.size() - 1).category;
+        int row = table.getSelectedRow();
+        CodeItem source = null;
+        if (row >= 0) {
+            source = items.get(row);
+        } else if (!items.isEmpty()) {
+            source = items.get(items.size() - 1);
+        }
+        return source == null
+            ? CodeItem.of(CodeItem.DEFAULT_CATEGORY, "", "", "", false)
+            : CodeItem.of(source.category, source.sub, "", "", false);
     }
 
     // -- 表格模型 ----------------------------------------------------------
 
     private final class Model extends AbstractTableModel {
-        private final List<String[]> rows = new ArrayList<String[]>();
+        private final List<Object[]> rows = new ArrayList<Object[]>();
 
         Model(List<CodeItem> items) {
             for (int i = 0; i < items.size(); i++) {
-                CodeItem item = items.get(i);
-                rows.add(new String[] { item.category, item.name, item.code });
+                rows.add(row(items.get(i)));
             }
+        }
+
+        private Object[] row(CodeItem item) {
+            return new Object[] { item.category, item.sub, item.name, item.code,
+                Boolean.valueOf(item.pinned) };
         }
 
         public int getRowCount() {
@@ -248,6 +273,11 @@ public final class CodeEditor {
             return COLUMNS[column];
         }
 
+        /** 釘選欄回 Boolean，JTable 才會畫成打勾框而不是文字。 */
+        public Class<?> getColumnClass(int column) {
+            return column == PIN_COLUMN ? Boolean.class : String.class;
+        }
+
         public boolean isCellEditable(int row, int column) {
             return true;
         }
@@ -257,14 +287,18 @@ public final class CodeEditor {
         }
 
         public void setValueAt(Object value, int row, int column) {
-            rows.get(row)[column] = value == null ? "" : String.valueOf(value).trim();
+            if (column == PIN_COLUMN) {
+                rows.get(row)[column] = Boolean.valueOf(Boolean.TRUE.equals(value));
+            } else {
+                rows.get(row)[column] = value == null ? "" : String.valueOf(value).trim();
+            }
             dirty = true;
             message.setText(" ");
             fireTableCellUpdated(row, column);
         }
 
         void add(CodeItem item) {
-            rows.add(new String[] { item.category, item.name, item.code });
+            rows.add(row(item));
             fireTableRowsInserted(rows.size() - 1, rows.size() - 1);
         }
 
@@ -274,7 +308,7 @@ public final class CodeEditor {
         }
 
         void swap(int a, int b) {
-            String[] tmp = rows.get(a);
+            Object[] tmp = rows.get(a);
             rows.set(a, rows.get(b));
             rows.set(b, tmp);
             fireTableRowsUpdated(Math.min(a, b), Math.max(a, b));
@@ -283,10 +317,15 @@ public final class CodeEditor {
         List<CodeItem> snapshot() {
             List<CodeItem> items = new ArrayList<CodeItem>();
             for (int i = 0; i < rows.size(); i++) {
-                String[] row = rows.get(i);
-                items.add(new CodeItem(row[0], row[1], row[2]));
+                Object[] row = rows.get(i);
+                items.add(CodeItem.of(text(row[0]), text(row[1]), text(row[2]),
+                    text(row[3]), Boolean.TRUE.equals(row[4])));
             }
             return items;
+        }
+
+        private String text(Object value) {
+            return value == null ? "" : String.valueOf(value);
         }
     }
 }
