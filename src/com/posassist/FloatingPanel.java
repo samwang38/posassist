@@ -1022,7 +1022,18 @@ public final class FloatingPanel {
             status.setText("這個畫面不支援帶入");
             return;
         }
+        // 帶入之後 POSN 會在焦點離開會員欄時同步做驗證與載入（跑在 EDT 上），
+        // 那段時間整個畫面都會停住。先把「帶入中」逼著畫出來，
+        // 店員才知道是在等，而不是以為 POS 當掉了。
+        status.setText("帶入中…");
+        status.paintImmediately(0, 0, status.getWidth(), status.getHeight());
+
+        long startedAt = System.currentTimeMillis();
         boolean ok = applier.apply(code);
+        long ms = System.currentTimeMillis() - startedAt;
+        PosLog.info("帶入會員代碼 " + (ok ? "完成" : "被拒絕") + "，耗時 " + ms
+            + "ms（含 POSN 自己的驗證與載入）");
+
         status.setText(ok ? "已帶入 POS：" + code : "POS 目前不接受帶入");
         if (ok) {
             searchField.setText("");

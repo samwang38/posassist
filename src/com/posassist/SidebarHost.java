@@ -321,18 +321,30 @@ public final class SidebarHost {
         }
     }
 
+    /**
+     * 結束前的收尾。**絕對不能碰 Swing。**
+     *
+     * EPB 是在 EDT 上呼叫 System.exit 的（com.epb.shell.Main：印完 "exiting system"
+     * 就 exit）。System.exit 會等所有 shutdown hook 跑完，而 EDT 正卡在 exit 裡面
+     * —— 這時候 hook 若用 invokeAndWait 去等 EDT，就是互相等，JVM 永遠結束不了：
+     * 畫面關掉了，java 行程卻還留著。外面包 try/catch 也沒用，卡住不是例外。
+     *
+     * 而且整個行程都要收了，側欄還不還原沒有任何差別 —— 畫面本來就跟著消失。
+     * 所以這裡只清內部狀態、停掉看門狗，其餘什麼都不做。
+     */
     private void installShutdownHook() {
         removeShutdownHook();
         try {
             shutdownHook = new Thread(new Runnable() {
                 public void run() {
-                    Safe.guard("結束前還原側欄", new Runnable() {
+                    Safe.guard("結束前收尾", new Runnable() {
                         public void run() {
-                            restore();
+                            mounted = false;
+                            stopWatchdog();
                         }
                     });
                 }
-            }, "PosAssist-SidebarRestore");
+            }, "PosAssist-Shutdown");
             Runtime.getRuntime().addShutdownHook(shutdownHook);
         } catch (Throwable ignored) {
             shutdownHook = null;

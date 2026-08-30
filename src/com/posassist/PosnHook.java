@@ -314,21 +314,26 @@ public final class PosnHook implements FloatingPanel.VipApplier, SidebarHost.Gua
 
         final String code = vipId.trim();
 
-        // 先把 EPB 主視窗拉回焦點，否則 requestFocusInWindow 只會排隊等視窗被啟用
+        // 視窗沒被啟用時 requestFocusInWindow 只會排隊等啟用，所以要先拉回來；
+        // 但已經是使用中的視窗就別碰 —— 多一次 requestFocus 會多一輪焦點進出，
+        // 而 POSN 的會員載入正是掛在「焦點離開」上（見下面），會被多觸發一次。
         focusShellWindow();
 
         applyingToPos = true;
         try {
             Safe.call(field, "setText", new Class<?>[] { String.class }, new Object[] { code });
             Safe.call(field, "requestFocusInWindow");
-            // 等同按下 Enter，讓 POSN 走它自己的載入流程
-            Safe.call(field, "postActionEvent");
         } finally {
             applyingToPos = false;
         }
-        PosLog.info("已帶入會員代碼到 POS");
+        PosLog.info("已把會員代碼填進 POS 欄位");
 
-        // POSN 處理完 Enter 之後可能自己移動焦點，讓它先決定；它沒接手才補位
+        // POSN 的 vipIdTextField 沒有 ActionListener（只有 KeyListener 與 FocusListener），
+        // 真正跑驗證與載入的是 vipIdTextFieldFocusLost → changeAndCheckVipID，
+        // 而它是同步跑在 EDT 上的（會呼叫 EpbPosCheckUtility.checkVip 等連線動作）。
+        // 也就是說：焦點一離開會員欄，畫面就會停住到 POSN 做完為止。
+        // 所以先讓面板把「帶入中」畫出來，再用 invokeLater 觸發，
+        // 店員看得到是在等，而不是以為當掉了。
         returnFocusToPos();
         return true;
     }
@@ -460,6 +465,12 @@ public final class PosnHook implements FloatingPanel.VipApplier, SidebarHost.Gua
     public void returnFocusToPos() {
         FloatingPanel.onEdt(new Runnable() {
             public void run() {
+                // 先看焦點在不在 EPB 裡：已經在就什麼都別做。
+                // 每多動一次焦點，POSN 的 focusLost 就可能多跑一次會員驗證，
+                // 那是同步的連線動作，畫面會多停一次。
+                if (focusInsideShell()) {
+                    return;
+                }
                 focusShellWindow();
                 if (focusInsideShell()) {
                     return;
@@ -479,9 +490,10 @@ public final class PosnHook implements FloatingPanel.VipApplier, SidebarHost.Gua
         });
     }
 
+    /** 把 EPB 主視窗拉到前面。已經是使用中的視窗就不動，避免多餘的焦點進出。 */
     private static void focusShellWindow() {
         Window shell = shellWindow();
-        if (shell == null) {
+        if (shell == null || shell.isActive()) {
             return;
         }
         Safe.guard("拉回 EPB 視窗焦點", new Runnable() {

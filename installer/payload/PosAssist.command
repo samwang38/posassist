@@ -173,7 +173,25 @@ start_epb_helper() {
   local root
   root="$(dirname "$EPB_DIR")"
   [ -f "$root/Helper/epbhlp.jar" ] || return 0
-  ( cd "$root" && "$JAVA" -jar Helper/epbhlp.jar >/dev/null 2>&1 & ) || true
+  # 記下 PID：EPB 關掉時要一起收掉它。用 exec 讓 $! 就是 java 本身，
+  # 不是中間那層子殼，否則 kill 到的是殼、java 會變孤兒繼續留著。
+  ( cd "$root" && exec "$JAVA" -jar Helper/epbhlp.jar >/dev/null 2>&1 ) &
+  HELPER_PID=$!
+  return 0
+}
+
+# EPB 結束後把我們開的 Helper 一起收掉。只殺自己開的那一個 PID，
+# 不用 pkill —— 那會連使用者自己從原本捷徑開的那份一起殺掉。
+stop_epb_helper() {
+  [ -n "${HELPER_PID:-}" ] || return 0
+  kill "$HELPER_PID" 2>/dev/null || true
+  # 給它一秒好好收；還在就強制結束
+  local i=0
+  while [ $i -lt 10 ] && kill -0 "$HELPER_PID" 2>/dev/null; do
+    /bin/sleep 0.1
+    i=$((i + 1))
+  done
+  kill -9 "$HELPER_PID" 2>/dev/null || true
   return 0
 }
 
@@ -209,15 +227,21 @@ else
 fi
 
 # 跟原本的啟動腳本一樣，先把 Helper 帶起來再開 EPB。出事也不能擋住開店。
-( start_epb_helper ) || true
+HELPER_PID=""
+start_epb_helper || true
 
 # EPB 要求工作目錄是 Shell/，否則找不到 Setting.xml 與 log/
 cd "$SHELL_DIR" || exit 1
 
-exec "$JAVA" \
+# 這裡刻意不用 exec：留著這層 shell，EPB 結束後才有機會把 Helper 收掉
+"$JAVA" \
   -Xms256m -Xmx1024m \
   -Dfile.encoding=UTF-8 \
   -Dposassist.appCode="${POSASSIST_APP_CODE:-POSN}" \
   -Dposassist.logDir="$SCRIPT_DIR/logs" \
   -cp "../PosAssist/posassist.jar:shell.jar:lib/*:../Trans/lib/*" \
   com.posassist.Launcher
+status=$?
+
+stop_epb_helper
+exit $status
