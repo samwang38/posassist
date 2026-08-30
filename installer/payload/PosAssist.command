@@ -226,6 +226,17 @@ else
   exit 1
 fi
 
+# 支援用途：只開設定視窗、不開 EPB。
+# 側欄裡也有設定入口，但那個要 POS 開著才看得到 —— 面板出問題（例如要把
+# panelMode 改回 floating）的時候，正好就是側欄進不去的時候，所以留這條後路。
+# 設定視窗完全不碰 EPB，不需要登入。
+if [ "${1:-}" = "--settings" ]; then
+  cd "$SHELL_DIR" || exit 1
+  exec "$JAVA" -Dfile.encoding=UTF-8 \
+    -Dposassist.logDir="$SCRIPT_DIR/logs" \
+    -cp "../PosAssist/posassist.jar" com.posassist.SettingsDialog
+fi
+
 # 跟原本的啟動腳本一樣，先把 Helper 帶起來再開 EPB。出事也不能擋住開店。
 HELPER_PID=""
 start_epb_helper || true

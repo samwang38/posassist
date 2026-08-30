@@ -192,39 +192,60 @@ public final class SelfTest {
         phone("", null);
 
         System.out.println();
-        System.out.println("[10] 會員建立輔助（PosAssist 只開原生畫面，不寫入任何資料）");
-        // 開原生 POSVIP 用的兩支公開方法。3 參數的 checkPrivilege 會自己補 LOC_ID，
-        // 跟 POSVIP 自己判斷 isNewAllowed 是同一條路
+        System.out.println("[10] 會員建立（叫出 EPB 原生建立表單，寫入由框架自己做）");
+        // 權限：跟原生 POSVIP 判斷 isNewAllowed 同一條路
         staticMethod("com.ipt.epbtls.EpbApplicationUtility", "checkPrivilege",
             String.class, String.class, String.class);
-        staticMethod("com.ipt.epbtls.EpbApplicationUtility", "callEpbApplication",
-            String.class, java.util.Map.class);
-        // 門市規則（手機碼數、姓名唯一、Email 檢查）跟原生讀同一支，順序才會一致
         staticMethod("com.epb.persistence.utl.BusinessUtility", "getAppSetting",
             String.class, String.class, String.class, String.class);
-        sqlPortable("姓名重複", PosVipRules.nameConflictSql());
-        bindCount("姓名重複", PosVipRules.nameConflictSql(), 1);
 
-        draft("姓名必填", "", "0912345678", "", "", 0, false);
-        draft("姓名不得超過上限", repeat("陳", VipCreateDraft.MAX_NAME + 1),
-            "0912345678", "", "", 0, false);
-        draft("最短的合格資料", "陳小明", "0912345678", "", "", 0, true);
-        draft("電話格式不對", "陳小明", "abcdefgh", "", "", 0, false);
-        draft("電話碼數不符門市設定", "陳小明", "091234567", "", "", 10, false);
-        draft("電話碼數符合門市設定", "陳小明", "0912345678", "", "", 10, true);
-        draft("沒設定碼數就不檢查", "陳小明", "091234567", "", "", 0, true);
-        draft("Email 缺 @", "陳小明", "0912345678", "abc.example.com", "", 0, false);
-        draft("Email 網域沒有點", "陳小明", "0912345678", "abc@example", "", 0, false);
-        draft("Email 正常", "陳小明", "0912345678", "abc@example.com", "", 0, true);
-        draft("閏年 2 月 29 日", "陳小明", "0912345678", "", "2024-02-29", 0, true);
-        draft("非閏年沒有 2 月 29 日", "陳小明", "0912345678", "", "2023-02-29", 0, false);
-        draft("百年不閏", "陳小明", "0912345678", "", "1900-02-29", 0, false);
-        draft("四百年又閏", "陳小明", "0912345678", "", "2000-02-29", 0, true);
-        draft("月份不合理", "陳小明", "0912345678", "", "1990-13-01", 0, false);
-        draft("生日不能晚於今天", "陳小明", "0912345678", "", "2026-12-31", 0, false);
-        draft("生日就是今天", "陳小明", "0912345678", "", "2026-08-31", 0, true);
-        draft("生日格式必須是 YYYY-MM-DD", "陳小明", "0912345678", "", "1990/01/01", 0, false);
-        draft("生日選填", "陳小明", "0912345678", "", "", 0, true);
+        // 這一串就是 CreatorAction.actionPerformed() 走的每一步，缺一步就開不起來
+        Class<?> home = load("com.epb.framework.ApplicationHome");
+        Class<?> valueContext = load("com.epb.framework.ValueContext");
+        Class<?> block = load("com.epb.framework.Block");
+        Class<?> view = load("com.epb.framework.View");
+        Class<?> application = load("com.epb.framework.Application");
+
+        constructor("com.epb.framework.ApplicationHome",
+            String.class, String.class, String.class, String.class, String.class);
+        anyMethod("com.epb.framework.ApplicationPool", "getCreatorApplication",
+            String.class, home, valueContext);
+        iface("com.epb.framework.Creator", new String[] { "getCreatorBlock" });
+        // 表單要顯示哪些欄位，是靠 config 裡的 form sequence 決定的
+        // （registerInvisibleFieldNames 管的是表格欄位，對表單沒有作用）
+        anyMethod("com.epb.framework.Block", "getEffectiveName");
+        anyMethod("com.epb.framework.PropertyUtility", "updateFormSequences",
+            java.util.Properties.class, String.class, java.util.TreeMap.class);
+        anyMethod("com.epb.framework.PropertyUtility", "getRequiredFields",
+            java.util.Properties.class, String.class);
+        anyMethod("com.epb.framework.Block", "getDefaultsApplier");
+        anyMethod("com.epb.framework.Block", "setDefaultsApplier",
+            load("com.epb.framework.DefaultsApplier"));
+        anyMethod("com.epb.framework.Block", "addValueContext", valueContext);
+        anyMethod("com.epb.framework.Block", "removeValueContext", valueContext);
+        // Safe.proxy 要靠這三個方法把 POSVIP 原本的預設值邏輯包起來再補上電話
+        iface("com.epb.framework.DefaultsApplier",
+            new String[] { "initialize", "applyDefaults", "cleanup" });
+        anyMethod("com.epb.framework.ConfigUtility", "loadAppConfig",
+            application, boolean.class);
+        anyMethod("com.epb.framework.ConfigUtility", "loadAppUserConfig",
+            String.class, String.class);
+        anyMethod("com.epb.framework.CreatorView", "showCreatorDialog",
+            view, String.class, block, java.util.Properties.class);
+        anyMethod("org.apache.commons.beanutils.PropertyUtils", "setProperty",
+            Object.class, String.class, Object.class);
+
+        // Safe.call 以前只找 public 方法，這幾支是 package-private 的
+        record("Safe.call 找得到 package-private 方法",
+            Safe.call(java.util.Arrays.asList(1, 2, 3), "size") != null);
+
+        // 預設顯示的欄位就是說好的那幾個，不要哪次改壞了整張表單冒出 50 欄
+        java.util.Set<String> fields = VipCreator.visibleFields();
+        record("建立表單欄位不超過 6 個（實得 " + fields.size() + "）", fields.size() <= 6);
+        for (String expected : new String[] { "name", "vipPhone1", "emailAddr",
+                                              "birthDate", "gender" }) {
+            record("建立表單有 " + expected, fields.contains(expected));
+        }
 
         System.out.println();
         System.out.println("========================================");
@@ -325,29 +346,43 @@ public final class SelfTest {
         record("內部欄位 " + simple(className) + "." + fieldName + "（補接用）", ok);
     }
 
-    /**
-     * 建立草稿的驗證。
-     *
-     * 「今天」固定成一個值，未來生日那條規則才驗得穩 —— 用真的今天的話，
-     * 測試案例會隨著日曆自己失效。
-     */
-    private static final int[] TODAY = { 2026, 8, 31 };
-
-    private static void draft(String label, String name, String phone, String email,
-                              String birthday, int phoneLength, boolean expected) {
-        VipCreateDraft.Result result = VipCreateDraft.of(
-            name, phone, email, birthday, phoneLength, TODAY);
-        boolean ok = result.ok() == expected;
-        record("草稿 " + label
-            + (ok ? "" : "（實得：" + (result.ok() ? "通過" : result.error) + "）"), ok);
+    /** 建構子存在嗎。ApplicationHome 是我們唯一自己 new 出來的 EPB 物件。 */
+    private static void constructor(String className, Class<?>... signature) {
+        Class<?> type = load(className);
+        boolean ok = false;
+        if (type != null) {
+            try {
+                type.getDeclaredConstructor(signature);
+                ok = true;
+            } catch (Throwable ignored) {
+                ok = false;
+            }
+        }
+        record("建構子 " + simple(className) + "()", ok);
     }
 
-    private static String repeat(String unit, int times) {
-        StringBuilder out = new StringBuilder();
-        for (int i = 0; i < times; i++) {
-            out.append(unit);
+    /**
+     * 方法存在嗎 —— 不分 public 還是 package-private。
+     *
+     * staticMethod 用的是 getMethod，只看得到 public 的；框架這條鏈上有好幾支
+     * 是 package-private（getCreatorApplication、showCreatorDialog、
+     * loadAppUserConfig、getEffectiveTemplateClass），得沿繼承鏈自己找，
+     * 跟 Safe.call 現在的做法一致。
+     */
+    private static void anyMethod(String className, String methodName,
+                                  Class<?>... signature) {
+        Class<?> type = load(className);
+        boolean ok = false;
+        for (Class<?> current = type; current != null && !ok;
+             current = current.getSuperclass()) {
+            try {
+                current.getDeclaredMethod(methodName, signature);
+                ok = true;
+            } catch (Throwable ignored) {
+                // 這層沒有就往上找
+            }
         }
-        return out.toString();
+        record("方法 " + simple(className) + "." + methodName + "()", ok);
     }
 
     /** 單邊專有的語法一律不准出現，否則換一台資料庫就炸。 */

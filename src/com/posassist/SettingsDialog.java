@@ -6,6 +6,7 @@ import java.awt.Dimension;
 import java.awt.FlowLayout;
 import java.awt.Font;
 import java.awt.GridBagConstraints;
+import java.awt.GridLayout;
 import java.awt.GridBagLayout;
 import java.awt.Insets;
 import java.awt.Window;
@@ -14,9 +15,11 @@ import java.awt.event.ActionListener;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.Set;
 
 import javax.swing.BorderFactory;
 import javax.swing.ButtonGroup;
@@ -60,7 +63,43 @@ public final class SettingsDialog {
     private final JRadioButton floatingRadio = new JRadioButton("獨立浮動視窗");
     private final JCheckBox autoUpdateBox = new JCheckBox("開啟時自動更新到最新版");
     private final JCheckBox enableVipCreateBox =
-        new JCheckBox("會員建立輔助（試用）");
+        new JCheckBox("會員建立（試用）");
+
+    /**
+     * 建立表單可以勾的欄位：{屬性名, 畫面上的名稱}。
+     *
+     * 中文名稱是照 EPB 自己的 lang/posvip_zht.properties 抄的，不是自己翻的
+     * —— 店員在原生表單上看到什麼，這裡就寫什麼，才對得起來。
+     * 直接寫死而不去讀那個檔：這個視窗安裝時就會被叫起來，那時 EPB 還不一定在。
+     */
+    private static final String[][] VIP_FIELDS = {
+        { "name", "名稱" },
+        { "vipPhone1", "VIP電話1" },
+        { "emailAddr", "郵件地址" },
+        { "birthDate", "生日" },
+        { "gender", "性別" },
+        { "vipId", "VIP代碼" },
+        { "vipPhone2", "VIP電話2" },
+        { "cardNo", "卡號" },
+        { "classId", "等級代碼" },
+        { "address1", "地址1" },
+        { "self1Id", "辦卡條件代碼" },
+        { "self2Id", "有無小孩代碼" },
+        { "self3Id", "活動通知代碼" },
+        { "remark4", "備註4" },
+        { "empId", "員工代碼" },
+        { "custId", "客戶代碼" },
+    };
+
+    /** 沒特別設定時預設會出現的欄位。跟 VipCreator 的預設保持一致。 */
+    private static final String[] VIP_FIELDS_DEFAULT = {
+        "name", "vipPhone1", "emailAddr", "birthDate", "gender"
+    };
+
+    /** 屬性名 → 勾選盒。順序就是寫進設定檔的順序，也是表單上的順序。 */
+    private final Map<String, JCheckBox> vipFieldBoxes =
+        new LinkedHashMap<String, JCheckBox>();
+    private final JPanel vipFieldPanel = new JPanel();
     private final JLabel passwordHint = new JLabel(" ");
     private final JLabel message = new JLabel(" ");
     private final JButton testButton = new JButton("測試連線");
@@ -129,6 +168,7 @@ public final class SettingsDialog {
         boolean vipCreate = panel != null
             && "true".equalsIgnoreCase(panel.getProperty("enableVipCreate", "false").trim());
         enableVipCreateBox.setSelected(vipCreate);
+        buildVipFieldBoxes(panel == null ? "" : panel.getProperty("vipCreateFields", ""));
     }
 
     // -- 版面 --------------------------------------------------------------
@@ -167,10 +207,18 @@ public final class SettingsDialog {
         addRow(form, row++, "更新", autoUpdateBox);
         addRow(form, row++, "建立會員", enableVipCreateBox);
         JLabel vipCreateHint = new JLabel(
-            "查無會員時多一個入口，整理好資料後開啟 EPB 原生會員畫面。資料一律由店員自己送出。");
+            "查無會員時多一個入口，直接叫出 EPB 原生的會員建立表單，電話會先幫你填好。");
         vipCreateHint.setForeground(MUTED);
         vipCreateHint.setFont(vipCreateHint.getFont().deriveFont(11f));
         addHint(form, row - 1, vipCreateHint);
+
+        addRow(form, row++, "表單欄位", vipFieldPanel);
+        JLabel vipFieldHint = new JLabel(
+            "勾要出現在建立表單上的欄位。必填欄位就算沒勾，EPB 還是會自己補回來。");
+        vipFieldHint.setForeground(MUTED);
+        vipFieldHint.setFont(vipFieldHint.getFont().deriveFont(11f));
+        addHint(form, row - 1, vipFieldHint);
+        syncVipFieldEnablement();
 
         root.add(form, BorderLayout.CENTER);
 
@@ -208,6 +256,114 @@ public final class SettingsDialog {
         root.add(south, BorderLayout.SOUTH);
 
         return root;
+    }
+
+    // -- 建立表單的欄位挑選 ------------------------------------------------
+
+    /**
+     * 長出勾選盒。
+     *
+     * 設定檔裡如果有清單上沒有的欄位，也要長一個給它並勾起來 —— 門市可能自己
+     * 手打了某個欄位，不能因為在這裡按了一次儲存就把它洗掉。
+     */
+    private void buildVipFieldBoxes(String configured) {
+        java.util.List<String> selected = split(configured);
+
+        // 清單上的擺前面，設定檔裡多出來的補在後面
+        java.util.List<String[]> entries =
+            new java.util.ArrayList<String[]>(java.util.Arrays.asList(VIP_FIELDS));
+        for (String field : selected) {
+            if (!known(field)) {
+                entries.add(new String[] { field, field });
+            }
+        }
+
+        boolean useDefaults = selected.isEmpty();
+        java.util.Set<String> on = new LinkedHashSet<String>(
+            useDefaults ? java.util.Arrays.asList(VIP_FIELDS_DEFAULT) : selected);
+
+        // 固定三欄，不要用 WrapFlow：那個是靠容器實際寬度算高度的，
+        // 但這裡是 dialog.pack() 決定寬度，pack 的當下還沒有寬度可問，
+        // 它會退回「排成一列」，16 個勾選盒就把設定視窗撐到一千多 px 寬。
+        vipFieldPanel.setLayout(new GridLayout(0, 3, 10, 0));
+        vipFieldPanel.setOpaque(false);
+        for (String[] entry : entries) {
+            JCheckBox box = new JCheckBox(entry[1], on.contains(entry[0]));
+            box.setToolTipText("屬性名 " + entry[0]);
+            box.setOpaque(false);
+            vipFieldBoxes.put(entry[0], box);
+            vipFieldPanel.add(box);
+        }
+
+        // 功能沒開的時候，這排勾選盒沒有意義，跟著一起灰掉
+        enableVipCreateBox.addActionListener(new ActionListener() {
+            public void actionPerformed(ActionEvent event) {
+                syncVipFieldEnablement();
+            }
+        });
+    }
+
+    private void syncVipFieldEnablement() {
+        boolean on = enableVipCreateBox.isSelected();
+        for (JCheckBox box : vipFieldBoxes.values()) {
+            box.setEnabled(on);
+        }
+    }
+
+    /**
+     * 勾好的欄位，逗號分隔。
+     *
+     * 剛好就是預設那組時回 null，讓設定檔不要出現這個 key —— 沒有這個 key，
+     * 程式才會用它自己的預設（包含「代碼不是自動產生時補上 VIP代碼」那段判斷）。
+     * 寫死一份一模一樣的清單只會讓那段判斷失效。
+     */
+    private String selectedVipFields() {
+        java.util.List<String> chosen = new java.util.ArrayList<String>();
+        for (Map.Entry<String, JCheckBox> entry : vipFieldBoxes.entrySet()) {
+            if (entry.getValue().isSelected()) {
+                chosen.add(entry.getKey());
+            }
+        }
+        if (chosen.isEmpty()) {
+            return null;   // 一個都沒勾＝回到預設，而不是變成一張空表單
+        }
+        java.util.Set<String> asSet = new LinkedHashSet<String>(chosen);
+        java.util.Set<String> defaults =
+            new LinkedHashSet<String>(java.util.Arrays.asList(VIP_FIELDS_DEFAULT));
+        if (asSet.equals(defaults)) {
+            return null;
+        }
+        StringBuilder joined = new StringBuilder();
+        for (String field : chosen) {
+            if (joined.length() != 0) {
+                joined.append(',');
+            }
+            joined.append(field);
+        }
+        return joined.toString();
+    }
+
+    private static boolean known(String field) {
+        for (String[] entry : VIP_FIELDS) {
+            if (entry[0].equals(field)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static java.util.List<String> split(String value) {
+        java.util.List<String> parts = new java.util.ArrayList<String>();
+        if (value == null) {
+            return parts;
+        }
+        for (String part : value.split(",")) {
+            String field = part.trim();
+            if (field.length() != 0 && !parts.contains(field)) {
+                parts.add(field);
+            }
+        }
+        return parts;
     }
 
     private void addField(JPanel form, int row, String label, JTextField field, String hint) {
@@ -391,6 +547,19 @@ public final class SettingsDialog {
         managed.put("panelMode", floatingRadio.isSelected() ? "floating" : "embedded");
         managed.put("autoUpdate", String.valueOf(autoUpdateBox.isSelected()));
         managed.put("enableVipCreate", String.valueOf(enableVipCreateBox.isSelected()));
+        String vipFields = selectedVipFields();
+        if (vipFields != null) {
+            managed.put("vipCreateFields", vipFields);
+        }
+
+        /*
+         * 這個視窗管得到的 key，跟「這次要寫出去的 key」不是同一件事：
+         * vipCreateFields 在勾選＝預設時會刻意不寫，好讓程式用它自己的預設。
+         * 但它仍然是我們管的 —— 不放進這個集合的話，下面保留未知 key 那段
+         * 會把舊值原封不動抄回去，畫面上取消勾選就等於沒有作用。
+         */
+        Set<String> owned = new LinkedHashSet<String>(managed.keySet());
+        owned.add("vipCreateFields");
 
         StringBuilder body = new StringBuilder();
         body.append("# PosAssist 一般設定（由設定視窗產生）\n\n");
@@ -404,7 +573,7 @@ public final class SettingsDialog {
             Collections.sort(others);
             boolean first = true;
             for (String key : others) {
-                if (managed.containsKey(key)) {
+                if (owned.contains(key)) {
                     continue;
                 }
                 if (first) {

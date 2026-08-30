@@ -45,6 +45,18 @@ macOS 專用。
 <EPB_ROOT>/EPB/PosAssist/PosAssist.command --update-only
 ```
 
+## 設定
+
+面板右下角的「設定」可以改預約帳密、面板位置、會員建立與建立表單要出現哪些欄位。
+存檔後重開 EPB 生效。
+
+側欄要 POS 開著才看得到，而「面板出問題」正好就是進不去側欄的時候，
+所以同一個視窗也能單獨叫起來（不需要登入 EPB）：
+
+```bash
+<EPB_ROOT>/EPB/PosAssist/PosAssist.command --settings
+```
+
 ## 個人設定不會被更新覆蓋
 
 `config/` 底下這些是各店自己的東西，更新、重裝、移除都不會被動到：
@@ -93,9 +105,12 @@ macOS 專用。
 - **零編譯期依賴 EPB**：全部走反射與 `java.lang.reflect.Proxy`，
   `build.command` 刻意不帶任何 EPB classpath。EPB 改版少了某個欄位時，
   外掛只會少顯示一項，不會炸掉結帳畫面。
-- **不寫入 EPB 任何資料**：只跑 `SELECT`。帶入 POS 是填欄位再送 Enter，
-  由 POSN 自己驗證，跟店員手打完全同一條路徑。會員建立輔助也不例外：
-  外掛只整理資料並開啟原生 `POSVIP`，實際新增全部由店員在原生畫面送出。
+- **不自己寫 EPB 的資料**：查詢只跑 `SELECT`，外掛沒有任何 `INSERT`／`UPDATE`。
+  帶入 POS 是填欄位再送 Enter，由 POSN 自己驗證，跟店員手打完全同一條路徑。
+  會員建立是叫出 EPB **原生的建立表單**（`CreatorView`），寫入由框架自己的
+  `BlockFormPM.commitChanges()` 完成，POSVIP 的驗證器、自動帶值、預設值與權限
+  控制全程有效 —— 走的是 `CreatorAction` 這條 EPB 模組之間本來就在用的路。
+  但**發動寫入的是外掛**，這點跟純查詢時期不同，改動這一塊要格外小心。
 - **不碰原廠檔案**：`Shell/lib/`、`shell.jar`、`appcfg/` 都會被 EPB 的 patch 覆蓋。
 - **面板不搶鍵盤焦點**：否則條碼掃描器的輸入會跑進面板而不是 POS。
 - **SQL 只用 Postgres 與 Oracle 都有的語法**：`EpbApplicationUtility.getResultList`

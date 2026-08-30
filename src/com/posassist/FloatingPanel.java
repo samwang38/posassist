@@ -5,6 +5,7 @@ import java.awt.Color;
 import java.awt.Component;
 import java.awt.Cursor;
 import java.awt.Dimension;
+import java.awt.FlowLayout;
 import java.awt.Font;
 import java.awt.Graphics;
 import java.awt.Graphics2D;
@@ -142,11 +143,6 @@ public final class FloatingPanel {
      * 權限與模組是在背景執行緒確認過才設值的，按下去不會再碰資料庫。
      */
     private String createPhone;
-    /**
-     * 入口是不是已經切成「建立完成，重新查詢」。原生 POSVIP 開起來之後
-     * 店員還要在那邊填一輪，我們不能卡在這裡等，只能留一個回來按的按鈕。
-     */
-    private boolean awaitingCreate;
     /** 預約區現在顯示的是哪個會員；側欄寬度變了要照新寬度重畫。 */
     private String reservationVip = "";
     /** 上次重畫預約區時的寬度，避免同一個寬度重畫兩次。 */
@@ -335,10 +331,18 @@ public final class FloatingPanel {
         version.setFont(version.getFont().deriveFont(10f));
         version.setToolTipText("PosAssist " + Version.NAME);
 
+        // 設定放在版本號旁邊：一直看得到，但不佔一整列。
+        // 以前只有「預約還沒設定過」時才有入口，已經設定過的門市要改任何一項
+        // 都得去改文字檔。
+        JPanel corner = new JPanel(new FlowLayout(FlowLayout.RIGHT, 8, 0));
+        corner.setOpaque(false);
+        corner.add(settingsLink());
+        corner.add(version);
+
         JPanel bottom = new JPanel(new BorderLayout(8, 0));
         bottom.setOpaque(false);
         bottom.add(footer, BorderLayout.WEST);
-        bottom.add(version, BorderLayout.EAST);
+        bottom.add(corner, BorderLayout.EAST);
         root.add(bottom, BorderLayout.SOUTH);
 
         return root;
@@ -780,6 +784,32 @@ public final class FloatingPanel {
         relayout();
     }
 
+    /** 設定入口。做成連結的樣子，跟結帳代碼那個「編輯」同一個語彙。 */
+    private JButton settingsLink() {
+        JButton button = new JButton("設定");
+        button.setFont(Style.tiny(button.getFont()));
+        button.setForeground(MUTED);
+        button.setBorderPainted(false);
+        button.setContentAreaFilled(false);
+        button.setFocusPainted(false);
+        // 跟面板上其他按鈕一樣不可聚焦：條碼掃描器的輸入必須留在 POS
+        button.setFocusable(false);
+        button.setMargin(new Insets(0, 0, 0, 0));
+        button.setBorder(BorderFactory.createEmptyBorder());
+        button.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        button.setToolTipText("預約帳密、面板位置、會員建立與表單欄位");
+        button.addActionListener(new ActionListener() {
+            public void actionPerformed(ActionEvent event) {
+                Safe.guard("開啟設定", new Runnable() {
+                    public void run() {
+                        openSettings();
+                    }
+                });
+            }
+        });
+        return button;
+    }
+
     private void openSettings() {
         Window owner = embedded()
             ? SwingUtilities.getWindowAncestor(content)
@@ -1197,11 +1227,7 @@ public final class FloatingPanel {
             public void actionPerformed(ActionEvent event) {
                 Safe.guard("建立會員入口", new Runnable() {
                     public void run() {
-                        if (awaitingCreate) {
-                            recheckAfterCreate();
-                        } else {
-                            openVipCreator();
-                        }
+                        openVipCreator();
                     }
                 });
             }
@@ -1216,9 +1242,7 @@ public final class FloatingPanel {
             return;
         }
         createPhone = phone;
-        awaitingCreate = false;
-        createVip.setText("建立會員");
-        createVip.setToolTipText("整理好資料後開啟 EPB 原生會員畫面，由你自己送出");
+        createVip.setToolTipText("開啟 EPB 原生的會員建立表單，電話會先幫你填好");
         createVip.setVisible(true);
         relayout();
     }
@@ -1228,83 +1252,41 @@ public final class FloatingPanel {
             return;
         }
         createPhone = null;
-        awaitingCreate = false;
         createVip.setVisible(false);
         relayout();
     }
 
+    /**
+     * 開啟原生的會員建立表單。
+     *
+     * 表單是 modal 的，這個呼叫會擋到店員送出或取消為止 —— 這裡本來就在 EDT 上，
+     * 而且原生表單自己會處理它那段的等待，不需要我們再包一層背景執行緒。
+     *
+     * 送出成功會直接拿到建立好的會員代碼，不必再查一次資料庫。
+     */
     private void openVipCreator() {
         String phone = createPhone;
         if (phone == null) {
             return;
         }
-        Window owner = embedded()
-            ? SwingUtilities.getWindowAncestor(content)
-            : dialog;
-        String opened = new VipCreateDialog(owner, phone).showDialog();
-        if (opened == null) {
+        say("開啟會員建立表單…", MUTED);
+        VipCreator.Result result = VipCreator.create(phone);
+
+        if (result.cancelled()) {
             say("已取消，沒有建立任何資料", MUTED);
             return;
         }
-        // POSVIP 開起來之後店員還要在那邊填一輪，這裡不能卡著等。
-        // 把入口換成回來按的按鈕，按了才重查。
-        createPhone = opened;
-        awaitingCreate = true;
-        createVip.setText("建立完成，重新查詢");
-        createVip.setToolTipText("在 POSVIP 送出後按這裡，確認會員已建立並帶入 POS");
-        createVip.setVisible(true);
-        say("已開啟 POSVIP，送出後回來按「建立完成，重新查詢」", MUTED);
-        relayout();
-    }
-
-    /**
-     * 原生送出之後回來對一次帳。查到了就順手帶入 POS —— 走的是店員手打會員
-     * 代碼的同一條路徑（PosnHook.apply），沒有新增任何寫入行為。
-     */
-    private void recheckAfterCreate() {
-        final String phone = createPhone;
-        if (phone == null) {
+        if (result.problem != null) {
+            say(result.problem, Style.DANGER);
             return;
         }
-        say("查詢中...", MUTED);
-        final int sequence = ++querySequence;
-        new SwingWorker<VipLookup.Outcome, Void>() {
-            protected VipLookup.Outcome doInBackground() {
-                return VipLookup.lookup(phone);
-            }
 
-            protected void done() {
-                Safe.guard("建立後重新查詢", new Runnable() {
-                    public void run() {
-                        render();
-                    }
-                });
-            }
-
-            private void render() {
-                if (sequence != querySequence) {
-                    return;
-                }
-                VipLookup.Outcome outcome;
-                try {
-                    outcome = get();
-                } catch (Throwable t) {
-                    PosLog.warn("建立後重新查詢失敗", t);
-                    say("查詢無法完成，請稍後再按一次", Style.DANGER);
-                    return;
-                }
-                if (outcome.status != VipLookup.Status.FOUND) {
-                    // 還沒送出、或原生那邊擋下來了。維持按鈕，讓店員再按一次
-                    say("還沒查到這位會員，POSVIP 送出後再按一次", MUTED);
-                    return;
-                }
-                shownFromSearch = true;
-                show(outcome.results);   // 這裡會把入口收起來
-                // 搜尋框由 applyToPos() 自己清（跟點會員代碼帶入是同一條路徑）；
-                // 在這裡先清會觸發輸入監聽，把剛顯示好的結果又蓋掉
-                applyToPos();
-            }
-        }.execute();
+        // 建好了就當作查到這個人：顯示出來，並用店員手打代碼的同一條路徑帶入 POS
+        hideCreate();
+        searchField.setText("");
+        shownFromSearch = false;
+        say("會員已建立", ACCENT);
+        lookupAsync(result.vipId, false);
     }
 
     // -- 帶入 POS ----------------------------------------------------------

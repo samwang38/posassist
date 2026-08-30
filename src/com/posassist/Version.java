@@ -6,7 +6,7 @@ package com.posassist;
  */
 public final class Version {
 
-    public static final String NAME = "1.5.8";
+    public static final String NAME = "1.5.9";
 
     /** 更新來源。公開 repo，POS 機不需要任何憑證。 */
     public static final String MANIFEST_URL =

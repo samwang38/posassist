@@ -51,11 +51,54 @@ public final class Safe {
             return null;
         }
         try {
-            Method method = target.getClass().getMethod(methodName, signature);
+            Method method = method(target.getClass(), methodName, signature);
+            if (method == null) {
+                PosLog.warn("找不到方法: " + target.getClass().getName() + "." + methodName);
+                return null;
+            }
             method.setAccessible(true);
             return method.invoke(target, args);
         } catch (Throwable t) {
             PosLog.warn("呼叫失敗: " + target.getClass().getName() + "." + methodName, t);
+            return null;
+        }
+    }
+
+    /**
+     * 沿著繼承鏈找方法，找不到才退回 getMethod。
+     *
+     * 不能只用 getMethod：EPB 框架有些我們需要的方法是 package-private
+     * （ApplicationPool.getCreatorApplication、Block.getEffectiveTemplateClass），
+     * getMethod 只看得到 public 的。跟 staticCall 那邊同一個理由、同一個做法。
+     */
+    private static Method method(Class<?> type, String methodName, Class<?>[] signature) {
+        for (Class<?> current = type; current != null; current = current.getSuperclass()) {
+            try {
+                return current.getDeclaredMethod(methodName, signature);
+            } catch (NoSuchMethodException notHere) {
+                // 這層沒有就往上找
+            }
+        }
+        try {
+            return type.getMethod(methodName, signature);   // 介面上的 default 方法
+        } catch (NoSuchMethodException missing) {
+            return null;
+        }
+    }
+
+    /** 建構 EPB 的物件（例如 ApplicationHome）。失敗回 null。 */
+    public static Object construct(String className, Class<?>[] signature, Object[] args) {
+        Class<?> type = type(className);
+        if (type == null) {
+            return null;
+        }
+        try {
+            java.lang.reflect.Constructor<?> constructor =
+                type.getDeclaredConstructor(signature);
+            constructor.setAccessible(true);
+            return constructor.newInstance(args);
+        } catch (Throwable t) {
+            PosLog.warn("建構失敗: " + className, t);
             return null;
         }
     }
