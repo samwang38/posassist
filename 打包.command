@@ -19,6 +19,7 @@ sha256_of() {
 "$REPO/build.command" > /dev/null
 VERSION=$(cat "$REPO/VERSION")
 SHA=$(sha256_of "$REPO/posassist.jar")
+LAUNCHER_SHA=$(sha256_of "$REPO/installer/payload/PosAssist.command")
 PKG="PosAssist-$VERSION"
 OUT="$REPO/dist"
 
@@ -47,11 +48,16 @@ fi
 
 (cd "$OUT" && zip -qr "$PKG.zip" "$PKG" -x '*.DS_Store')
 
+# 啟動腳本單獨放一份到 dist：它要當成 release 資產，門市才更新得到自己
+cp "$REPO/installer/payload/PosAssist.command" "$OUT/PosAssist.command"
+
 cat > "$OUT/manifest.txt" <<EOF
 version=$VERSION
 sha256=$SHA
+launcher_sha256=$LAUNCHER_SHA
 EOF
 
 echo "版本 $VERSION"
 echo "sha256 $SHA"
+echo "啟動腳本 sha256 $LAUNCHER_SHA"
 echo "安裝包 $OUT/$PKG.zip"

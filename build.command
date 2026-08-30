@@ -38,4 +38,4 @@ cp "$REPO"/src/com/posassist/trust/*.pem "$REPO/build/com/posassist/trust/"
 VERSION=$(grep -oE 'NAME = "[^"]+"' "$REPO/src/com/posassist/Version.java" | sed 's/.*"\(.*\)"/\1/')
 echo "$VERSION" > "$REPO/VERSION"
 
-echo "已建置 posassist.jar（版本 $VERSION）"
+echo "已建置 posassist.jar（版本 ${VERSION}）"

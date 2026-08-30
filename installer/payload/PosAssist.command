@@ -18,12 +18,67 @@ LOG="$SCRIPT_DIR/logs/posassist.log"
 # 可用環境變數覆寫，方便測試與將來換發佈位置
 MANIFEST_URL="${POSASSIST_MANIFEST_URL:-https://github.com/samwang38/posassist/releases/latest/download/manifest.txt}"
 JAR_URL="${POSASSIST_JAR_URL:-https://github.com/samwang38/posassist/releases/latest/download/posassist.jar}"
+LAUNCHER_URL="${POSASSIST_LAUNCHER_URL:-https://github.com/samwang38/posassist/releases/latest/download/PosAssist.command}"
 CHECK_TIMEOUT=5
 DOWNLOAD_TIMEOUT=20
 
 log() {
   mkdir -p "$SCRIPT_DIR/logs" 2>/dev/null || return 0
   printf '%s INFO  [更新] %s\n' "$(date '+%Y-%m-%d %H:%M:%S.000')" "$1" >> "$LOG" 2>/dev/null || true
+}
+
+# --- 啟動腳本自我更新 -----------------------------------------------------
+# 比對的是雜湊而不是版號：這支腳本自己壞掉時，門市連 EPB 都開不起來，
+# 不能只有「版號不同」才修得到。
+# 換上去的要下次開店才生效 —— bash 邊讀邊執行，這一次跑的還是舊的那份。
+# 一樣任何異常都 return 0。
+update_launcher() {
+  local want="${1:-}"
+  local self="$SCRIPT_DIR/PosAssist.command"
+  [ -n "$want" ] || return 0
+  [ -f "$self" ] || return 0
+
+  local have
+  have=$(shasum -a 256 "$self" 2>/dev/null | cut -d' ' -f1)
+  [ -n "$have" ] || return 0
+  [ "$have" != "$want" ] || return 0
+
+  local tmp="$self.new"
+  rm -f "$tmp"
+  if ! curl -fsSL --max-time "$DOWNLOAD_TIMEOUT" "$LAUNCHER_URL" -o "$tmp" 2>/dev/null; then
+    rm -f "$tmp"
+    log "啟動腳本下載失敗，維持現有版本"
+    return 0
+  fi
+
+  local got
+  got=$(shasum -a 256 "$tmp" 2>/dev/null | cut -d' ' -f1)
+  if [ "$got" != "$want" ]; then
+    rm -f "$tmp"
+    log "啟動腳本雜湊不符，放棄更新"
+    return 0
+  fi
+
+  # 雜湊只證明檔案傳輸沒壞，還要確定它真的是這支腳本、而且語法過得去。
+  # 換上一份跑不起來的啟動腳本，等於門市開不了店。
+  if ! head -1 "$tmp" | grep -q '^#!/bin/bash' \
+     || ! grep -q 'POSASSIST_MANIFEST_URL' "$tmp" \
+     || ! /bin/bash -n "$tmp" 2>/dev/null; then
+    rm -f "$tmp"
+    log "啟動腳本內容非預期，放棄更新"
+    return 0
+  fi
+
+  cp -p "$self" "$self.prev" 2>/dev/null || true
+  chmod +x "$tmp" 2>/dev/null || true
+  # 一定要用 mv 換掉整個檔（換 inode），不能原地覆寫 —— 正在跑的這份還在讀舊檔
+  if mv -f "$tmp" "$self" 2>/dev/null; then
+    log "啟動腳本已更新，下次開店生效（上一版留在 PosAssist.command.prev）"
+  else
+    rm -f "$tmp"
+    log "啟動腳本換版失敗，維持現有版本"
+  fi
+  return 0
 }
 
 # --- 自動更新 -------------------------------------------------------------
@@ -47,19 +102,24 @@ auto_update() {
     return 0
   }
 
-  local remote_ver remote_sha
+  local remote_ver remote_sha remote_launcher
   remote_ver=$(printf '%s\n' "$manifest" | grep -E '^version=' | head -1 | cut -d= -f2- | tr -d '[:space:]')
   remote_sha=$(printf '%s\n' "$manifest" | grep -E '^sha256=' | head -1 | cut -d= -f2- | tr -d '[:space:]')
+  remote_launcher=$(printf '%s\n' "$manifest" | grep -E '^launcher_sha256=' | head -1 | cut -d= -f2- | tr -d '[:space:]')
 
   if [ -z "$remote_ver" ] || [ -z "$remote_sha" ]; then
     log "manifest 格式非預期，略過更新"
     return 0
   fi
+
+  # 先修啟動腳本再看版號：版號一樣但腳本壞掉的情況也要救得回來
+  update_launcher "$remote_launcher"
+
   if [ "$remote_ver" = "$local_ver" ]; then
     return 0
   fi
 
-  log "發現新版 $remote_ver（目前 ${local_ver:-未知}），下載中"
+  log "發現新版 ${remote_ver}（目前 ${local_ver:-未知}），下載中"
   local tmp="$SCRIPT_DIR/posassist.jar.new"
   rm -f "$tmp"
   if ! curl -fsSL --max-time "$DOWNLOAD_TIMEOUT" "$JAR_URL" -o "$tmp" 2>/dev/null; then
@@ -72,7 +132,7 @@ auto_update() {
   got=$(shasum -a 256 "$tmp" 2>/dev/null | cut -d' ' -f1)
   if [ "$got" != "$remote_sha" ]; then
     rm -f "$tmp"
-    log "雜湊不符，放棄更新（預期 $remote_sha，實得 ${got:-無})"
+    log "雜湊不符，放棄更新（預期 ${remote_sha}，實得 ${got:-無})"
     return 0
   fi
 
@@ -89,7 +149,7 @@ auto_update() {
   fi
   if mv -f "$tmp" "$SCRIPT_DIR/posassist.jar" 2>/dev/null; then
     printf '%s\n' "$remote_ver" > "$SCRIPT_DIR/VERSION"
-    log "已更新到 $remote_ver（上一版留在 posassist.jar.prev）"
+    log "已更新到 ${remote_ver}（上一版留在 posassist.jar.prev）"
   else
     rm -f "$tmp"
     log "換版失敗，維持現有版本"
@@ -108,7 +168,8 @@ if [ -e "$EPB_DIR/Patching.lock" ]; then
   exit 1
 fi
 
-auto_update
+# 用子殼跑：更新裡面出任何事都只結束子殼，開店這條路不會被擋住
+( auto_update ) || true
 
 # 支援用途：只跑一次更新檢查、不開 EPB，方便現場診斷更新有沒有問題
 if [ "${1:-}" = "--update-only" ]; then

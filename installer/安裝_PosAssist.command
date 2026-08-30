@@ -69,7 +69,7 @@ if [ ! -w "$EPB_ROOT/EPB" ]; then
 fi
 
 if ! mkdir -p "$TARGET/logs"; then
-  echo "無法建立 $TARGET，安裝中止。"
+  echo "無法建立 ${TARGET}，安裝中止。"
   exit 1
 fi
 if ! cp "$HERE/payload/posassist.jar" "$TARGET/posassist.jar"; then

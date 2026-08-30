@@ -77,6 +77,7 @@ jobs:
           gh release create "v$V" \
             posassist.jar \
             dist/manifest.txt \
+            dist/PosAssist.command \
             "dist/PosAssist-$V.zip" \
             --title "PosAssist $V" \
             --notes "門市端會在下次開啟 EPB 時自動更新到這一版。個人設定（帳密、結帳代碼、面板模式）不受影響。"

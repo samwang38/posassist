@@ -26,6 +26,17 @@ fi
 
 CURRENT=$(grep -oE 'NAME = "[^"]+"' src/com/posassist/Version.java | sed 's/.*"\(.*\)"/\1/')
 
+# 出貨前擋一種會讓門市開不了店的寫法：$var 後面直接接中文。
+# bash 3.2 在 UTF-8 語系會把全形字的位元組當成變數名的一部分，配上 set -u 直接中止，
+# 而啟動腳本正是用 set -u 跑的。一律要寫成 ${var}。
+BARE=$(grep -rnP '\$[A-Za-z_][A-Za-z0-9_]*[^\x00-\x7F]' --include='*.command' . 2>/dev/null \
+  | grep -v '^\./dist/' || true)
+if [ -n "$BARE" ]; then
+  echo "有 \$變數 後面直接接非 ASCII 字元，請改成 \${變數}："
+  printf '%s\n' "$BARE"
+  exit 1
+fi
+
 if gh release view "v$VERSION" >/dev/null 2>&1; then
   echo "v$VERSION 已經發佈過了，請換一個版號。"
   echo "（門市是比對版號決定要不要更新，重複的版號不會觸發更新。）"
@@ -55,7 +66,7 @@ fi
 
 # 先在本機建置一次，編不過就不要推上去浪費一輪 CI
 if ! ./build.command > /dev/null 2>&1; then
-  echo "本機建置失敗，已把版號改回 $CURRENT，請先修好再發。"
+  echo "本機建置失敗，已把版號改回 ${CURRENT}，請先修好再發。"
   sed -i '' "s/NAME = \"$VERSION\"/NAME = \"$CURRENT\"/" src/com/posassist/Version.java
   exit 1
 fi
@@ -65,6 +76,6 @@ git commit -q -m "$VERSION"
 git push -q
 
 echo
-echo "已推上去。GitHub Actions 正在建置與發佈 v$VERSION。"
+echo "已推上去。GitHub Actions 正在建置與發佈 v${VERSION}。"
 echo "看進度： gh run watch     或  https://github.com/samwang38/posassist/actions"
 echo "發佈完成後，門市下次開 EPB 就會自動更新到這一版。"
