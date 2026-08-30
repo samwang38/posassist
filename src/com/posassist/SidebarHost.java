@@ -5,6 +5,7 @@ import java.awt.CardLayout;
 import java.awt.Color;
 import java.awt.Component;
 import java.awt.Container;
+import java.awt.Dimension;
 import java.awt.Font;
 import java.awt.Window;
 import java.awt.event.ActionEvent;
@@ -110,9 +111,21 @@ public final class SidebarHost {
             JPanel host = new JPanel(new BorderLayout());
             host.add(buildSwitcher(), BorderLayout.NORTH);
             host.add(cards, BorderLayout.CENTER);
+            // 沒有這行，divider 拖不動：JSplitPane 不讓人拖過左元件的最小寬度，
+            // 而面板內容算出來的最小寬度比原本的應用程式清單寬得多。
+            host.setMinimumSize(new Dimension(0, 0));
 
-            // 只換元件，不碰 divider 位置，也不碰全螢幕狀態
+            // 換元件前先記住 divider 在哪，換完放回去 ——
+            // 不然版面會照新元件的偏好寬度重排，側欄突然變寬。
+            int divider = found.getDividerLocation();
+            if (divider <= 0) {
+                divider = left.getPreferredSize().width;
+            }
+            // 偏好寬度也釘成原本的寬度：只要有一次「照偏好寬度重排」，
+            // 我們比較寬的內容就會把側欄整個撐開。使用者自己拖過的寬度優先，不受影響。
+            host.setPreferredSize(new Dimension(divider, left.getPreferredSize().height));
             splitPane.setLeftComponent(host);
+            restoreDivider(divider);
             splitPane.revalidate();
             splitPane.repaint();
 
@@ -129,6 +142,30 @@ public final class SidebarHost {
         }
     }
 
+    /**
+     * 把 divider 放回原本的位置。
+     *
+     * 設一次不夠：setLeftComponent 之後還會有一輪版面計算，會照新元件的偏好寬度
+     * 把 divider 推走，所以排完再設一次。之後使用者自己拖到哪就是哪，不再干涉。
+     */
+    private void restoreDivider(final int location) {
+        if (splitPane == null || location <= 0) {
+            return;
+        }
+        splitPane.setDividerLocation(location);
+        SwingUtilities.invokeLater(new Runnable() {
+            public void run() {
+                Safe.guard("回復側欄寬度", new Runnable() {
+                    public void run() {
+                        if (splitPane != null) {
+                            splitPane.setDividerLocation(location);
+                        }
+                    }
+                });
+            }
+        });
+    }
+
     private JPanel buildSwitcher() {
         JPanel bar = new JPanel(new BorderLayout());
         bar.setBackground(BAR_BG);
@@ -136,14 +173,17 @@ public final class SidebarHost {
 
         JPanel buttons = new JPanel();
         buttons.setOpaque(false);
-        buttons.setLayout(new java.awt.FlowLayout(java.awt.FlowLayout.LEFT, 4, 0));
+        // 側欄拖窄時按鈕要換行，不然第二顆會被切掉、點不到
+        WrapFlow.install(buttons, 4, 3);
 
         assistButton = tab("輔助工具", CARD_ASSIST);
         homeButton = tab("應用程式", CARD_HOME);
         buttons.add(assistButton);
         buttons.add(homeButton);
 
-        bar.add(buttons, BorderLayout.WEST);
+        // 要放 CENTER 不能放 WEST：WEST 只給偏好寬度，按鈕會被切掉而不是折行。
+        // CENTER 拿得到整條的可用寬度，WrapFlow 才有機會換行（本來就靠左排）。
+        bar.add(buttons, BorderLayout.CENTER);
         return bar;
     }
 

@@ -77,6 +77,8 @@ public final class FloatingPanel {
      * 寫成浮動視窗的寬度會讓嵌入時被切掉（不是換行，是直接看不到）。
      */
     private static final int WRAP_WIDTH = 280;
+    /** 再窄也不讓品項名擠成一個字一行。 */
+    private static final int MIN_WRAP_WIDTH = 120;
 
     private static final Color BG = new Color(0xF7, 0xF7, 0xF9);
     private static final Color MUTED = new Color(0x66, 0x66, 0x70);
@@ -117,6 +119,10 @@ public final class FloatingPanel {
     private String posVipId = "";
     /** 目前畫面上的結果是不是使用者自己查出來的。 */
     private boolean shownFromSearch;
+    /** 預約區現在顯示的是哪個會員；側欄寬度變了要照新寬度重畫。 */
+    private String reservationVip = "";
+    /** 上次重畫預約區時的寬度，避免同一個寬度重畫兩次。 */
+    private int lastWrapWidth = -1;
 
     /** 浮動視窗模式：自己開一個置頂、不搶焦點的視窗，並追蹤 POSN 位置。 */
     public FloatingPanel(Window owner) {
@@ -239,9 +245,29 @@ public final class FloatingPanel {
             root.add(codePad, BorderLayout.CENTER);
         }
 
+        root.addComponentListener(new java.awt.event.ComponentAdapter() {
+            public void componentResized(java.awt.event.ComponentEvent event) {
+                Safe.guard("面板寬度變動", new Runnable() {
+                    public void run() {
+                        reflowReservations();
+                    }
+                });
+            }
+        });
+
         footer.setForeground(MUTED);
         footer.setFont(footer.getFont().deriveFont(10f));
-        root.add(footer, BorderLayout.SOUTH);
+
+        JLabel version = new JLabel("v" + Version.NAME);
+        version.setForeground(MUTED);
+        version.setFont(version.getFont().deriveFont(10f));
+        version.setToolTipText("PosAssist " + Version.NAME);
+
+        JPanel bottom = new JPanel(new BorderLayout(8, 0));
+        bottom.setOpaque(false);
+        bottom.add(footer, BorderLayout.WEST);
+        bottom.add(version, BorderLayout.EAST);
+        root.add(bottom, BorderLayout.SOUTH);
 
         return root;
     }
@@ -559,6 +585,8 @@ public final class FloatingPanel {
             hideReservations();
             return;
         }
+        reservationVip = vipId == null ? "" : vipId;
+        lastWrapWidth = wrapWidth();
 
         Date at = cache.updatedAt();
         reservationHeader.setText("近期預約"
@@ -631,7 +659,19 @@ public final class FloatingPanel {
         }
     }
 
+    /** 側欄拖寬拖窄後，把預約區照新寬度重排一次。沒有預約在顯示就什麼都不做。 */
+    private void reflowReservations() {
+        if (reservationVip.length() == 0 || !reservationBox.isVisible()) {
+            return;
+        }
+        if (wrapWidth() == lastWrapWidth) {
+            return;
+        }
+        showReservations(reservationVip);
+    }
+
     private void hideReservations() {
+        reservationVip = "";
         if (!reservationBox.isVisible()) {
             return;
         }
@@ -724,8 +764,22 @@ public final class FloatingPanel {
         }
     }
 
+    /**
+     * 品項名換行用的寬度。側欄可以拖寬拖窄，所以照當下的實際寬度算，
+     * 不能寫死 —— 寫死的話拖窄會被切掉、拖寬則右邊空一大片。
+     * 還沒排版過（寬度 0）就先用原本的預設值。
+     */
+    private int wrapWidth() {
+        int width = content == null ? 0 : content.getWidth();
+        if (width <= 0) {
+            return WRAP_WIDTH;
+        }
+        // 扣掉左右內距 24 與可能出現的垂直捲軸約 15
+        return Math.max(MIN_WRAP_WIDTH, width - 24 - 15);
+    }
+
     /** 用 HTML 讓長品項名換行。文字要跳脫，避免品項名裡的符號被當成標籤。 */
-    private static String wrap(String text) {
+    private String wrap(String text) {
         if (text == null || text.length() == 0) {
             return "";
         }
@@ -744,7 +798,7 @@ public final class FloatingPanel {
         }
         // 用 table 的 width 屬性而不是 CSS width：Swing 的 HTML 算 preferred size 時
         // 會忽略 style='width:...'（實測仍回傳整行未折的寬度），只有 table width 會生效。
-        return "<html><table width=" + WRAP_WIDTH + " cellpadding=0 cellspacing=0>"
+        return "<html><table width=" + wrapWidth() + " cellpadding=0 cellspacing=0>"
             + "<tr><td>" + escaped + "</td></tr></table></html>";
     }
 

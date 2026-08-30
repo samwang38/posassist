@@ -6,7 +6,6 @@ import java.awt.Component;
 import java.awt.Container;
 import java.awt.Cursor;
 import java.awt.Dimension;
-import java.awt.FlowLayout;
 import java.awt.Font;
 import java.awt.Insets;
 import java.awt.LayoutManager;
@@ -61,7 +60,7 @@ public final class CodePad extends JPanel {
     private static final Color TAB_ON = new Color(0xE8, 0xEF, 0xF8);
     private static final Color BORDER = new Color(0xC3, 0xC9, 0xD2);
 
-    private final JPanel tabBar = new JPanel(new WrapFlow(4, 3));
+    private final JPanel tabBar = new JPanel();
     private final JPanel pinnedGrid = new JPanel(new CellGrid()) {
         // 跟 section() 同一個理由：不鎖最大高度，垂直 BoxLayout 會把它拉長
         public Dimension getMaximumSize() {
@@ -93,6 +92,8 @@ public final class CodePad extends JPanel {
         header.add(heading, BorderLayout.WEST);
         header.add(editLink(), BorderLayout.EAST);
         add(header, BorderLayout.NORTH);
+
+        WrapFlow.install(tabBar, 4, 3);
 
         JPanel body = new JPanel(new BorderLayout(0, 4));
         body.setOpaque(false);
@@ -485,65 +486,6 @@ public final class CodePad extends JPanel {
                 width = 4 * MIN_CELL + 3 * GAP;   // 還是問不到就先當成 4 欄
             }
             return Math.max(MIN_CELL, width - in.left - in.right);
-        }
-    }
-
-    /**
-     * 會換行的 FlowLayout。
-     *
-     * 原本的 FlowLayout 排版時會折行，但 preferredLayoutSize 永遠只回報「排成一列」
-     * 的高度，容器就只拿到一行的高度，折到第二行的頁籤被畫在可視範圍外 ——
-     * 看不到，也因為超出父容器範圍而收不到滑鼠事件，等於那個分類消失了。
-     */
-    private static final class WrapFlow extends FlowLayout {
-
-        WrapFlow(int hgap, int vgap) {
-            super(FlowLayout.LEFT, hgap, vgap);
-        }
-
-        public Dimension preferredLayoutSize(Container target) {
-            return wrapped(target);
-        }
-
-        public Dimension minimumLayoutSize(Container target) {
-            return wrapped(target);
-        }
-
-        private Dimension wrapped(Container target) {
-            synchronized (target.getTreeLock()) {
-                Insets in = target.getInsets();
-                int width = target.getWidth();
-                Container up = target.getParent();
-                while (width == 0 && up != null) {
-                    width = up.getWidth();
-                    up = up.getParent();
-                }
-                // 問不到寬度就退回單列，跟原本的行為一樣
-                int max = width == 0 ? Integer.MAX_VALUE
-                    : width - in.left - in.right - getHgap() * 2;
-
-                int x = 0, rowHeight = 0, widest = 0, height = 0;
-                for (int i = 0; i < target.getComponentCount(); i++) {
-                    Component c = target.getComponent(i);
-                    if (!c.isVisible()) {
-                        continue;
-                    }
-                    Dimension d = c.getPreferredSize();
-                    if (x > 0 && x + getHgap() + d.width > max) {
-                        widest = Math.max(widest, x);
-                        height += rowHeight + getVgap();
-                        x = 0;
-                        rowHeight = 0;
-                    }
-                    x += (x > 0 ? getHgap() : 0) + d.width;
-                    rowHeight = Math.max(rowHeight, d.height);
-                }
-                widest = Math.max(widest, x);
-                height += rowHeight;
-                return new Dimension(
-                    widest + in.left + in.right + getHgap() * 2,
-                    height + in.top + in.bottom + getVgap() * 2);
-            }
         }
     }
 
