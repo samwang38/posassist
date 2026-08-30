@@ -3,12 +3,13 @@ package com.posassist;
 import java.awt.BorderLayout;
 import java.awt.Color;
 import java.awt.Component;
+import java.awt.Container;
 import java.awt.Cursor;
 import java.awt.Dimension;
 import java.awt.FlowLayout;
 import java.awt.Font;
-import java.awt.GridLayout;
 import java.awt.Insets;
+import java.awt.LayoutManager;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
 import java.awt.event.MouseAdapter;
@@ -26,8 +27,11 @@ import javax.swing.JPopupMenu;
 import javax.swing.JScrollPane;
 
 /**
- * 自訂結帳代碼面板：釘選的固定在最上面，接著一列分類頁籤，下面 4 欄格子。
+ * 自訂結帳代碼面板：釘選的固定在最上面，接著分類頁籤，下面是代碼格子。
  * 主分類底下還能再分子分類，格子區就依子分類分段，每段一個小標。
+ *
+ * 欄數與頁籤列都跟著實際寬度走：側欄拉寬就多排幾個格子（不是把格子撐胖），
+ * 頁籤一列排不下就換行。各店的 EPB 分隔線拉到哪不一樣，寫死寬度撐不住。
  *
  * 點一顆按鈕就把代碼交給呼叫端帶進 POS，不跳確認 —— 誤觸的後果是 POS 多一筆品項，
  * 店員當場看得到也刪得掉，不會有錯誤資料默默寫進交易。
@@ -42,20 +46,28 @@ public final class CodePad extends JPanel {
         boolean applyCode(String code);
     }
 
-    private static final int COLUMNS = 4;
     private static final int GAP = 3;
     /** 名稱一行、代碼一行，剛好包住文字，不留多餘的白。 */
     private static final int BUTTON_HEIGHT = 40;
-    /** 側欄約 286px 可用，扣掉 3 個間隔，4 欄大約各 68px。 */
-    private static final int CELL_WIDTH = 66;
+    /**
+     * 一格最少要這麼寬（5 個中文字的名稱放得下一行）。欄數由實際可用寬度算，
+     * 不是寫死的 —— 側欄有多寬要看各店 EPB 分隔線拉到哪，寫死只會讓寬的機器
+     * 把每個格子撐胖、空一大片白。
+     */
+    private static final int MIN_CELL = 68;
 
     private static final Color ACCENT = new Color(0x1D, 0x4E, 0x89);
     private static final Color MUTED = new Color(0x66, 0x66, 0x70);
     private static final Color TAB_ON = new Color(0xE8, 0xEF, 0xF8);
     private static final Color BORDER = new Color(0xC3, 0xC9, 0xD2);
 
-    private final JPanel tabBar = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
-    private final JPanel pinnedGrid = new JPanel();
+    private final JPanel tabBar = new JPanel(new WrapFlow(4, 3));
+    private final JPanel pinnedGrid = new JPanel(new CellGrid()) {
+        // 跟 section() 同一個理由：不鎖最大高度，垂直 BoxLayout 會把它拉長
+        public Dimension getMaximumSize() {
+            return new Dimension(Integer.MAX_VALUE, getPreferredSize().height);
+        }
+    };
     private final Component pinnedGap = javax.swing.Box.createVerticalStrut(4);
     private final JPanel grid = new JPanel();
     private final JLabel status = new JLabel(" ");
@@ -257,31 +269,26 @@ public final class CodePad extends JPanel {
     }
 
     /**
-     * 一段的格子。要鎖最大高度 —— GridLayout 的最大高度是無上限的，
+     * 一段的格子。最大高度要鎖成 preferred —— 格子的最大高度沒有上限，
      * 直接丟進垂直 BoxLayout 會被拉長，按鈕跟著變高。
-     * 格子高度固定，preferred height 不受寬度影響，拿它當上限是準的。
+     * 高度隨欄數變，所以用 override 而不是 setMaximumSize 存一個當下的值。
      */
     private JPanel section(List<CodeItem> shown) {
-        JPanel panel = new JPanel();
+        JPanel panel = new JPanel(new CellGrid()) {
+            public Dimension getMaximumSize() {
+                return new Dimension(Integer.MAX_VALUE, getPreferredSize().height);
+            }
+        };
         panel.setOpaque(false);
         fill(panel, shown);
         panel.setAlignmentX(Component.LEFT_ALIGNMENT);
-        panel.setMaximumSize(
-            new Dimension(Integer.MAX_VALUE, panel.getPreferredSize().height));
         return panel;
     }
 
-    /** 把項目排成固定 4 欄的格子；最後一列補空白，免得按鈕被拉寬。 */
+    /** 放進格子裡。欄數與每格寬度由 CellGrid 依實際可用寬度決定。 */
     private void fill(JPanel panel, List<CodeItem> shown) {
-        int rows = (shown.size() + COLUMNS - 1) / COLUMNS;
-        panel.setLayout(new GridLayout(Math.max(rows, 1), COLUMNS, GAP, GAP));
         for (int i = 0; i < shown.size(); i++) {
             panel.add(keyButton(shown.get(i)));
-        }
-        for (int i = shown.size(); i < rows * COLUMNS; i++) {
-            JPanel filler = new JPanel();
-            filler.setOpaque(false);
-            panel.add(filler);
         }
     }
 
@@ -300,7 +307,7 @@ public final class CodePad extends JPanel {
             BorderFactory.createLineBorder(item.pinned ? ACCENT : BORDER),
             BorderFactory.createEmptyBorder(3, 1, 3, 1)));
         button.setMargin(new Insets(0, 0, 0, 0));
-        button.setPreferredSize(new Dimension(CELL_WIDTH, BUTTON_HEIGHT));
+        button.setPreferredSize(new Dimension(MIN_CELL, BUTTON_HEIGHT));
         button.setToolTipText(item.name + "（" + item.code + "）點一下帶入 POS，"
             + (item.pinned ? "右鍵可取消釘選" : "右鍵可釘選到最上面"));
         button.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
@@ -400,6 +407,144 @@ public final class CodePad extends JPanel {
         status.setText(ok
             ? "已帶入 " + item.name
             : "POS 目前不接受帶入");
+    }
+
+    // -- 版面 --------------------------------------------------------------
+
+    /**
+     * 代碼格子的排法：每格至少 MIN_CELL 寬，欄數由實際可用寬度算出來，
+     * 除不盡的餘數平均補給前面幾欄。側欄拉寬是多排幾個，不是每個變胖。
+     */
+    private static final class CellGrid implements LayoutManager {
+
+        public void addLayoutComponent(String name, Component comp) {
+        }
+
+        public void removeLayoutComponent(Component comp) {
+        }
+
+        public Dimension preferredLayoutSize(Container parent) {
+            synchronized (parent.getTreeLock()) {
+                int count = parent.getComponentCount();
+                if (count == 0) {
+                    return new Dimension(0, 0);
+                }
+                int cols = columns(parent);
+                int rows = (count + cols - 1) / cols;
+                Insets in = parent.getInsets();
+                return new Dimension(
+                    in.left + in.right + cols * MIN_CELL + (cols - 1) * GAP,
+                    in.top + in.bottom + rows * BUTTON_HEIGHT + (rows - 1) * GAP);
+            }
+        }
+
+        public Dimension minimumLayoutSize(Container parent) {
+            Insets in = parent.getInsets();
+            return new Dimension(in.left + in.right + MIN_CELL,
+                in.top + in.bottom + BUTTON_HEIGHT);
+        }
+
+        public void layoutContainer(Container parent) {
+            synchronized (parent.getTreeLock()) {
+                Insets in = parent.getInsets();
+                int cols = columns(parent);
+                int width = available(parent);
+                int cell = (width - (cols - 1) * GAP) / cols;
+                int spare = (width - (cols - 1) * GAP) % cols;   // 餘數補給前幾欄
+                int x = in.left;
+                for (int i = 0; i < parent.getComponentCount(); i++) {
+                    int col = i % cols;
+                    if (col == 0) {
+                        x = in.left;
+                    }
+                    int w = cell + (col < spare ? 1 : 0);
+                    parent.getComponent(i).setBounds(x,
+                        in.top + (i / cols) * (BUTTON_HEIGHT + GAP), w, BUTTON_HEIGHT);
+                    x += w + GAP;
+                }
+            }
+        }
+
+        private int columns(Container parent) {
+            return Math.max(1, (available(parent) + GAP) / (MIN_CELL + GAP));
+        }
+
+        /**
+         * 可用寬度。第一次排版時容器自己還不知道多寬，就往上找第一個知道的祖先 ——
+         * 跟 Swing 社群那個 WrapLayout 同一招，之後 revalidate 會用真正的寬度再算一次。
+         */
+        private int available(Container parent) {
+            Insets in = parent.getInsets();
+            int width = parent.getWidth();
+            Container up = parent.getParent();
+            while (width == 0 && up != null) {
+                width = up.getWidth();
+                up = up.getParent();
+            }
+            if (width == 0) {
+                width = 4 * MIN_CELL + 3 * GAP;   // 還是問不到就先當成 4 欄
+            }
+            return Math.max(MIN_CELL, width - in.left - in.right);
+        }
+    }
+
+    /**
+     * 會換行的 FlowLayout。
+     *
+     * 原本的 FlowLayout 排版時會折行，但 preferredLayoutSize 永遠只回報「排成一列」
+     * 的高度，容器就只拿到一行的高度，折到第二行的頁籤被畫在可視範圍外 ——
+     * 看不到，也因為超出父容器範圍而收不到滑鼠事件，等於那個分類消失了。
+     */
+    private static final class WrapFlow extends FlowLayout {
+
+        WrapFlow(int hgap, int vgap) {
+            super(FlowLayout.LEFT, hgap, vgap);
+        }
+
+        public Dimension preferredLayoutSize(Container target) {
+            return wrapped(target);
+        }
+
+        public Dimension minimumLayoutSize(Container target) {
+            return wrapped(target);
+        }
+
+        private Dimension wrapped(Container target) {
+            synchronized (target.getTreeLock()) {
+                Insets in = target.getInsets();
+                int width = target.getWidth();
+                Container up = target.getParent();
+                while (width == 0 && up != null) {
+                    width = up.getWidth();
+                    up = up.getParent();
+                }
+                // 問不到寬度就退回單列，跟原本的行為一樣
+                int max = width == 0 ? Integer.MAX_VALUE
+                    : width - in.left - in.right - getHgap() * 2;
+
+                int x = 0, rowHeight = 0, widest = 0, height = 0;
+                for (int i = 0; i < target.getComponentCount(); i++) {
+                    Component c = target.getComponent(i);
+                    if (!c.isVisible()) {
+                        continue;
+                    }
+                    Dimension d = c.getPreferredSize();
+                    if (x > 0 && x + getHgap() + d.width > max) {
+                        widest = Math.max(widest, x);
+                        height += rowHeight + getVgap();
+                        x = 0;
+                        rowHeight = 0;
+                    }
+                    x += (x > 0 ? getHgap() : 0) + d.width;
+                    rowHeight = Math.max(rowHeight, d.height);
+                }
+                widest = Math.max(widest, x);
+                height += rowHeight;
+                return new Dimension(
+                    widest + in.left + in.right + getHgap() * 2,
+                    height + in.top + in.bottom + getVgap() * 2);
+            }
+        }
     }
 
 }

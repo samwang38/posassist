@@ -29,9 +29,16 @@ public final class VipLookup {
     private static final String SHARED = "com.ipt.epbfrw.EpbSharedObjects";
     private static final String DEFAULT_ORG_ID = "01";
 
+    /**
+     * REMARK4 就是會員畫面上的「備註4」，門市拿它記 LINE 綁定狀態。
+     * 欄位名不是猜的：EPB 自己的 com.epb.beans.Posvipmas 有 remark1〜remark4。
+     * 萬一哪一台的 schema 沒有這欄，query() 會退回不帶它的 SQL，查詢本身不受影響。
+     */
+    static final String REMARK_COLUMN = "m.REMARK4";
+
     private static final String BASE_SELECT =
         "SELECT m.VIP_ID, m.NAME, m.VIP_PHONE1, m.VIP_PHONE2, m.EMAIL_ADDR, "
-        + "       m.CLASS_ID, c.CLASS_NAME "
+        + "       m.CLASS_ID, c.CLASS_NAME REMARK_SLOT "
         + "FROM POS_VIP_MAS m "
         + "LEFT JOIN (SELECT ORG_ID, CLASS_ID, MAX(CLASS_NAME) AS CLASS_NAME "
         + "           FROM POS_VIP_CLASS GROUP BY ORG_ID, CLASS_ID) c "
@@ -39,7 +46,19 @@ public final class VipLookup {
         // 直接拿 ? 跟 c.ORG_ID 比，型別由欄位決定，Postgres 與 Oracle 都不必轉型
         + " AND (c.ORG_ID = m.ORG_ID OR (m.ORG_ID IS NULL AND c.ORG_ID = ?)) ";
 
+    /**
+     * 這台的 POS_VIP_MAS 有沒有 REMARK4。查詢失敗過一次就關掉，
+     * 之後整個 session 都不再帶它 —— 寧可少一個欄位，也不要讓會員查詢一直失敗。
+     */
+    private static volatile boolean remarkAvailable = true;
+
     private VipLookup() {
+    }
+
+    /** 把 SELECT 裡的備註欄位插進去或拿掉。 */
+    private static String base(boolean withRemark) {
+        return BASE_SELECT.replace(" REMARK_SLOT",
+            withRemark ? ", " + REMARK_COLUMN : "");
     }
 
     // -- 結果 --------------------------------------------------------------
@@ -50,13 +69,17 @@ public final class VipLookup {
         public final String phone;
         public final String email;
         public final String level;
+        /** 備註4 的原文；欄位讀不到或空白時是空字串。 */
+        public final String remark;
 
-        Vip(String memberCode, String name, String phone, String email, String level) {
+        Vip(String memberCode, String name, String phone, String email, String level,
+            String remark) {
             this.memberCode = memberCode;
             this.name = name;
             this.phone = phone;
             this.email = email;
             this.level = level;
+            this.remark = remark;
         }
     }
 
@@ -172,6 +195,10 @@ public final class VipLookup {
 
     /** 產生精確查詢的 SQL。SelfTest 也用這支做語法把關。 */
     static String buildExactSql(int codeCount, int phoneCount) {
+        return buildExactSql(codeCount, phoneCount, true);
+    }
+
+    static String buildExactSql(int codeCount, int phoneCount, boolean withRemark) {
         StringBuilder where = new StringBuilder();
         if (codeCount > 0) {
             where.append("m.VIP_ID IN (").append(placeholders(codeCount)).append(")");
@@ -184,12 +211,16 @@ public final class VipLookup {
             where.append("m.VIP_PHONE1 IN (").append(marks).append(")")
                  .append(" OR m.VIP_PHONE2 IN (").append(marks).append(")");
         }
-        return BASE_SELECT + "WHERE " + where + " ORDER BY m.VIP_ID";
+        return base(withRemark) + "WHERE " + where + " ORDER BY m.VIP_ID";
     }
 
     /** 產生電話正規化備援的 SQL。SelfTest 也用這支做語法把關。 */
     static String buildFallbackSql() {
-        return BASE_SELECT
+        return buildFallbackSql(true);
+    }
+
+    static String buildFallbackSql(boolean withRemark) {
+        return base(withRemark)
             + "WHERE " + normalizedPhoneExpr("m.VIP_PHONE1") + " = ? "
             + "   OR " + normalizedPhoneExpr("m.VIP_PHONE2") + " = ? "
             + "ORDER BY m.VIP_ID";
@@ -203,7 +234,25 @@ public final class VipLookup {
             params.addAll(phones);           // VIP_PHONE1
             params.addAll(phones);           // VIP_PHONE2
         }
-        return query(buildExactSql(codes.size(), phones.size()), params);
+        List<Vector> rows = query(
+            buildExactSql(codes.size(), phones.size(), remarkAvailable), params);
+        if (rows == null && remarkAvailable) {
+            rows = withoutRemark(query(buildExactSql(codes.size(), phones.size(), false),
+                params));
+        }
+        return rows;
+    }
+
+    /**
+     * 帶備註欄位查失敗、不帶就成功 —— 代表這台沒有那個欄位。關掉它，
+     * 後面的查詢都走不帶備註的版本。回傳值原樣傳回去，只是順便記一筆。
+     */
+    private static List<Vector> withoutRemark(List<Vector> rows) {
+        if (rows != null) {
+            remarkAvailable = false;
+            PosLog.warn("查不到 " + REMARK_COLUMN + " 欄位，面板不顯示 LINE 會員");
+        }
+        return rows;
     }
 
     private static List<Vector> runFallback(String canonicalPhone) {
@@ -211,7 +260,11 @@ public final class VipLookup {
         params.add(sessionOrgId());
         params.add(canonicalPhone);
         params.add(canonicalPhone);
-        return query(buildFallbackSql(), params);
+        List<Vector> rows = query(buildFallbackSql(remarkAvailable), params);
+        if (rows == null && remarkAvailable) {
+            rows = withoutRemark(query(buildFallbackSql(false), params));
+        }
+        return rows;
     }
 
     /** 登入中的 ORG_ID；取不到就退回 01。 */
@@ -278,6 +331,7 @@ public final class VipLookup {
             String email = cell(row, 4);
             String classId = cell(row, 5);
             String className = cell(row, 6);
+            String remark = cell(row, 7);
 
             String phone = displayPhone(phone1, phone2, canonicalPhone);
             if (memberCode.length() == 0) {
@@ -286,7 +340,8 @@ public final class VipLookup {
             if (!seen.add(memberCode)) {
                 continue;
             }
-            results.add(new Vip(memberCode, name, phone, email, level(classId, className)));
+            results.add(new Vip(memberCode, name, phone, email,
+                level(classId, className), remark));
         }
 
         if (results.isEmpty()) {

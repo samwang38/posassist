@@ -163,6 +163,14 @@ public final class SelfTest {
         sqlPortable("電話備援", VipLookup.buildFallbackSql());
         bindCount("精確查詢", VipLookup.buildExactSql(1, 1), 4);
         bindCount("電話備援", VipLookup.buildFallbackSql(), 3);
+        // 備註4（LINE 會員）：帶與不帶兩種 SQL 都要能用，欄位不存在時才降得下去
+        record("精確查詢有帶備註4",
+            VipLookup.buildExactSql(1, 1).indexOf(VipLookup.REMARK_COLUMN) > 0);
+        record("備註4 可以拿掉",
+            VipLookup.buildExactSql(1, 1, false).indexOf(VipLookup.REMARK_COLUMN) < 0);
+        sqlPortable("精確查詢（無備註4）", VipLookup.buildExactSql(1, 1, false));
+        sqlPortable("電話備援（無備註4）", VipLookup.buildFallbackSql(false));
+        bindCount("精確查詢（無備註4）", VipLookup.buildExactSql(1, 1, false), 4);
 
         System.out.println();
         System.out.println("[9] 電話正規化（規則須與 member-lookup 一致）");

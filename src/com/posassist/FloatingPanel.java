@@ -94,6 +94,7 @@ public final class FloatingPanel {
     private final JLabel phoneValue = value();
     private final JLabel emailValue = value();
     private final JLabel levelValue = value();
+    private final JLabel lineValue = value();
     private final JLabel status = new JLabel(" ");
     private final JLabel footer = new JLabel(" ");
 
@@ -179,6 +180,7 @@ public final class FloatingPanel {
         addRow(fields, 2, "電話", phoneValue);
         addRow(fields, 3, "Email", emailValue);
         addRow(fields, 4, "等級", levelValue);
+        addRow(fields, 5, "LINE會員", lineValue);
         fields.setAlignmentX(Component.LEFT_ALIGNMENT);
 
         status.setForeground(MUTED);
@@ -498,6 +500,7 @@ public final class FloatingPanel {
         setValue(phoneValue, first.phone);
         setValue(emailValue, first.email);
         setValue(levelValue, first.level);
+        setValue(lineValue, lineStatus(first.remark));
         status.setText(results.size() > 1
             ? "符合 " + results.size() + " 筆，顯示第 1 筆"
             : " ");
@@ -734,6 +737,20 @@ public final class FloatingPanel {
         dialog.validate();
     }
 
+    /**
+     * 備註4 拿來記 LINE 綁定，內容像「已有綁定STUDIO A LINE帳號」，
+     * 一律照原文顯示只是佔位置，所以認得出來的就換成一句話。
+     * 認不出來的照原文顯示 —— 那欄是自由文字，硬套「已綁定」會把不是綁定的內容講錯。
+     */
+    private static String lineStatus(String remark) {
+        String text = remark == null ? "" : remark.trim();
+        if (text.length() == 0) {
+            return null;
+        }
+        return text.indexOf("綁定") >= 0 && text.indexOf("已") >= 0
+            ? "已綁定 LINE" : text;
+    }
+
     private static void setValue(JLabel label, String text) {
         boolean empty = text == null || text.length() == 0;
         label.setText(empty ? "-" : text);
@@ -749,6 +766,7 @@ public final class FloatingPanel {
         setValue(phoneValue, null);
         setValue(emailValue, null);
         setValue(levelValue, null);
+        setValue(lineValue, null);
         status.setText(message == null ? " " : message);
         hideReservations();
     }
