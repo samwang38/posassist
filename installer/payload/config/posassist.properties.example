@@ -14,11 +14,18 @@
 # 覺得嵌入版不合用，改成 floating 重開 EPB 即可，不必重裝。
 panelMode=embedded
 
+# 庫存與調撥第一版：預設關閉，SA 一般門市單機試用。
+# 啟用後登入即掛載三分類（輔助工具／庫存與調撥／應用程式）；關閉 POSN 保留勾選商品。
+# 浮動模式可隱藏，切換或開啟 EPB 應用程式會再顯示。
+# 直接勾選商品並比較帳面庫存；無獨立調撥清單，不建立單據。
+enableInventory=false
+inventoryDefaultStore=SA004
+
 # 開啟 EPB 時要不要自動更新到最新版（true / false）。
 # 更新只發生在啟動器裡、EPB 還沒起來之前，絕不會在結帳中途換程式；
 # 檢查限時 5 秒、下載限時 20 秒，任何失敗都直接用現有版本開，不會拖到開店。
 # 下載後會比對 sha256，不符就丟掉不換；上一版永遠留在 posassist.jar.prev。
-# 設成 false 就完全不連網。
+# 設成 false 就完全不連網。單機 -preview. 版本會略過自動更新，保留此偏好。
 autoUpdate=true
 
 # 開 EPB 時要不要順便帶起 EPB Helper（true / false，預設 true）。

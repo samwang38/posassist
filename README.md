@@ -3,6 +3,10 @@
 EPB（Enterprise Browser）的 POS 輔助面板外掛。結帳時在 EPB 左側欄顯示會員資訊、
 近期預約，以及可一鍵帶入 POS 的自訂結帳代碼。
 
+目前另有 `1.6.0-preview.4` 單機試用版：在 STORESUM 提供「庫存工具」按鈕，支援多商品共同供貨店、
+Apple 主機庫存比較；直接沿用 STORESUM 原生模糊搜尋與勾選，點按後依目前勾選比較，商品為列、門市為欄，只顯示現有庫存。功能預設關閉，先在士林 SA004 試用；詳見
+[試用說明](docs/inventory-trial.md)、[驗證紀錄](docs/inventory-validation.md)及[後續升級](docs/inventory-roadmap.md)。
+
 **不修改 EPB 任何原廠檔案。** 只新增 `<EPB_ROOT>/EPB/PosAssist/` 一個目錄，
 出問題改用原本的 EPB 捷徑開就完全正常。
 
@@ -25,9 +29,10 @@ macOS 專用。
 | 會員查詢 | 輸入電話或會員代碼按 Enter，顯示代碼／姓名／電話／Email／等級 |
 | 帶入會員 | 點會員代碼直接填進 POS 的會員欄並送出 |
 | 近期預約 | 顯示該會員近期的預約，依急迫性排序（已到貨／保留 → 已預約 → 已取貨 → 其他） |
-| 帶入預約單號 | 點單號後按 F10，自動填進序號視窗的「預約單號」欄 |
+| 帶入預約單號 | 點單號後按 F10，自動填進序號視窗的「預約單號」欄（限「已到貨／保留」，其他狀態不可點） |
 | 結帳代碼 | 自訂的分類九宮格，點一下把代碼帶進 POS，等同自己打代碼按 Enter |
 | 自動更新 | 開啟 EPB 時自動更新到最新版，不影響任何個人設定 |
+| 庫存與調撥（試用） | 原生 STORESUM 勾選同步、商品列／門市欄比較、同店型主機庫存比較 |
 
 ## 自動更新
 
@@ -38,6 +43,7 @@ macOS 專用。
 - 下載後比對 sha256，不符就丟掉不換
 - 上一版永遠留在 `posassist.jar.prev`
 - `config/posassist.properties` 設 `autoUpdate=false` 就完全不連網
+- 本機版本含 `-preview.` 時略過自動更新，使用試用包人工換版
 
 想單獨跑一次更新檢查來診斷：
 
@@ -50,7 +56,8 @@ macOS 專用。
 面板右下角的「設定」可以改預約帳密、面板位置、會員建立與建立表單要出現哪些欄位。
 存檔後重開 EPB 生效。
 
-側欄要 POS 開著才看得到，而「面板出問題」正好就是進不去側欄的時候，
+POS 輔助側欄只在 POS 開著時顯示。庫存工具不需 POSN，登入後只掛載 STORESUM 按鈕，點按才開啟視窗，關閉後不自動彈回。
+「面板出問題」可能正好進不去側欄，
 所以同一個視窗也能單獨叫起來（不需要登入 EPB）：
 
 ```bash
@@ -64,7 +71,7 @@ macOS 專用。
 | 檔案 | 內容 |
 |---|---|
 | `reservation.properties` | 預約系統帳密（權限 600） |
-| `posassist.properties` | 面板模式、自動更新開關 |
+| `posassist.properties` | 面板模式、自動更新、庫存開關及預設收貨店 |
 | `codes.txt` / `codes.txt.bak` | 自訂結帳代碼（分類欄可寫「主分類/子分類」） |
 | `codes.pins.txt` | 釘選置頂的代碼（一行一個代碼） |
 | `panel.state` | 面板記住的狀態（上下分隔位置）。程式自己寫的，刪掉就回預設 |
@@ -91,6 +98,7 @@ macOS 專用。
 
 ```bash
 ./build.command          # 只編譯出 posassist.jar
+./test.command           # 離線庫存邏輯、非同步失敗處理、介面與預覽更新測試
 ./打包.command           # 建置 + 組安裝包 + 產生 manifest（不發佈）
 ./發佈.command --release # 從本機直接發佈（平常用不到，push 就會自動發）
 ```
@@ -115,6 +123,8 @@ macOS 專用。
 - **面板不搶鍵盤焦點**：否則條碼掃描器的輸入會跑進面板而不是 POS。
 - **SQL 只用 Postgres 與 Oracle 都有的語法**：`EpbApplicationUtility.getResultList`
   走的是**本機 client 端資料庫**（各店可能不同），不是 AP WebService 後面那台 Oracle。
+  此規則適用既有本機會員查詢。新增庫存工具明確使用遠端 Oracle 固定模板，
+  透過反射呼叫 `EPB_Trans_Client4.fGet_Recordset`，不能接到本機查詢入口。
 - **側欄可回復**：只呼叫 `setLeftComponent`，原元件從不銷毀，多重還原觸發點。
 
 ### 測試

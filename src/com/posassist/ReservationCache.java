@@ -219,6 +219,16 @@ public final class ReservationCache {
         return STATUS_PRIORITY.length;
     }
 
+    /**
+     * 貨已經在店裡、單號可以拿去做後續動作的狀態。
+     *
+     * 就是排序表的第 0 組（已到貨／保留）—— 判斷跟排序共用同一份定義，
+     * 不會有「排最上面卻不給複製」這種對不起來的情況。
+     */
+    static boolean readyForPickup(String status) {
+        return statusRank(status) == 0;
+    }
+
     // -- 設定 --------------------------------------------------------------
 
     private static Properties read(File file) {

@@ -480,6 +480,12 @@ public final class VipLookup {
     /** 診斷用的查詢會拿回比較多列（執行計畫動輒十幾行），所以筆數上限拉出來。 */
     @SuppressWarnings("unchecked")
     private static List<Vector> query(String sql, List<Object> params, int maxRows) {
+        // 先走自己的連線。共用連線同時被 POSN 在 EDT 上用，兩邊交錯會把連線弄壞 ——
+        // 詳見 VipQuery 的類別註解。取不到獨立連線才退回共用連線（也就是舊行為）。
+        VipQuery.Result attempt = VipQuery.run(sql, params, maxRows);
+        if (attempt.handled) {
+            return attempt.rows;
+        }
         Object result = Safe.staticCall(
             UTILITY, "getResultList",
             new Class<?>[] { String.class, List.class, int.class },

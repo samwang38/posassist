@@ -25,6 +25,7 @@ import java.awt.event.KeyEvent;
 import java.awt.event.MouseAdapter;
 import java.awt.event.MouseEvent;
 import java.util.List;
+import java.util.concurrent.Callable;
 
 import java.text.SimpleDateFormat;
 import java.util.Date;
@@ -43,7 +44,6 @@ import javax.swing.plaf.basic.BasicSplitPaneDivider;
 import javax.swing.plaf.basic.BasicSplitPaneUI;
 import javax.swing.JTextField;
 import javax.swing.SwingUtilities;
-import javax.swing.SwingWorker;
 import javax.swing.Timer;
 import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
@@ -96,6 +96,14 @@ public final class FloatingPanel {
     private static final int SPLIT_SAVE_DELAY_MS = 1000;
     /** 再窄也不讓品項名擠成一個字一行。 */
     private static final int MIN_WRAP_WIDTH = 120;
+    /**
+     * 會員查詢的逾時。實機慢的時候要 8–9 秒（見 posassist.log 的「會員查詢 … ms」），
+     * 所以給得比那個寬鬆一點；超過就是這條連線真的有問題，不該讓面板一直卡在「查詢中」。
+     */
+    private static final int LOOKUP_TIMEOUT_MS = 20000;
+
+    /** 預約單號用等寬字體，可點與不可點兩種樣式共用，換樣式時左緣才切得齊。 */
+    private static final Font ORDER_FONT = new Font(Font.MONOSPACED, Font.PLAIN, 11);
 
     private static final Color BG = Style.PAGE;
     private static final Color MUTED = Style.MUTED;
@@ -132,8 +140,11 @@ public final class FloatingPanel {
     private boolean userMoved;
     private VipApplier applier;
 
-    /** 用來丟掉慢回來的舊查詢結果。 */
-    private int querySequence;
+    /**
+     * 會員查詢的單飛佇列。同一時間只有一次查詢，舊結果自動丟棄。
+     * 第一次查詢才建（lazy）—— 沒查過會員的 session 不必多開兩條執行緒。
+     */
+    private InventoryTasks lookups;
     /** POS 上目前的會員，輸入框清空時回復顯示。 */
     private String posVipId = "";
     /** 目前畫面上的結果是不是使用者自己查出來的。 */
@@ -551,6 +562,10 @@ public final class FloatingPanel {
 
     public void dispose() {
         detach();
+        if (lookups != null) {
+            lookups.close();     // 在途查詢的結果不會再交付到已經拆掉的元件上
+            lookups = null;
+        }
         if (!embedded()) {
             dialog.dispose();
         }
@@ -565,6 +580,7 @@ public final class FloatingPanel {
             return;
         }
         if (key.length() == 0) {
+            cancelLookup();
             clear("目前交易沒有會員");
             return;
         }
@@ -580,6 +596,7 @@ public final class FloatingPanel {
             return;
         }
         if (text.length() < MIN_QUERY_LENGTH) {
+            cancelLookup();
             clear("至少輸入 3 碼");
             return;
         }
@@ -603,46 +620,84 @@ public final class FloatingPanel {
         }
     }
 
-    /** fromSearch 區分結果來自使用者輸入框，還是 POS 上的會員自動跟隨。 */
+    /**
+     * fromSearch 區分結果來自使用者輸入框，還是 POS 上的會員自動跟隨。
+     *
+     * 走 {@link InventoryTasks} 的單飛佇列而不是裸 SwingWorker：SwingWorker 的預設池
+     * 有 10 條執行緒，逐字輸入時真的會同時發出好幾個查詢。佇列容量 1 + generation ticket
+     * 讓「最後一次查詢」永遠是唯一交付的那一次，而且交付保證在 EDT 上只發生一次。
+     */
     private void lookupAsync(final String key, final boolean fromSearch) {
         say("查詢中...", MUTED);
-        final int sequence = ++querySequence;
-        new SwingWorker<Search, Void>() {
-            protected Search doInBackground() {
+        setLookupBusy(true);
+        lookups().run(new Callable<Search>() {
+            public Search call() {
                 VipLookup.Outcome outcome = VipLookup.lookup(key);
                 return new Search(outcome, createPhoneFor(key, outcome));
             }
-
-            protected void done() {
+        }, new InventoryTasks.Completion<Search>() {
+            public void finish(final Search search, final Exception error) {
                 Safe.guard("顯示查詢結果", new Runnable() {
                     public void run() {
-                        render();
+                        setLookupBusy(false);
+                        if (error != null || search == null) {
+                            PosLog.warn("會員查詢失敗", error);
+                            clear(error == null || error.getMessage() == null
+                                ? "查詢無法完成"
+                                : error.getMessage());
+                            return;
+                        }
+                        if (search.outcome.message != null) {
+                            shownFromSearch = false;
+                            clear(search.outcome.message);
+                            offerCreate(search.createPhone);
+                            return;
+                        }
+                        shownFromSearch = fromSearch;
+                        show(search.outcome.results);
                     }
                 });
             }
+        });
+    }
 
-            private void render() {
-                if (sequence != querySequence) {
-                    return;   // 有更新的查詢在跑了，這筆結果丟掉
-                }
-                Search search;
-                try {
-                    search = get();
-                } catch (Throwable t) {
-                    PosLog.warn("會員查詢失敗", t);
-                    clear("查詢無法完成");
-                    return;
-                }
-                if (search.outcome.message != null) {
-                    shownFromSearch = false;
-                    clear(search.outcome.message);
-                    offerCreate(search.createPhone);
-                    return;
-                }
-                shownFromSearch = fromSearch;
-                show(search.outcome.results);
-            }
-        }.execute();
+    /**
+     * 不再需要在途查詢的結果了（POS 上的會員被清掉、輸入退到 3 碼以下）。
+     *
+     * 沒有這一步的話，慢回來的那筆結果會蓋掉「目前交易沒有會員」，
+     * 畫面上就出現一個交易裡其實沒有的會員。
+     */
+    private void cancelLookup() {
+        if (lookups != null) {
+            lookups.invalidate();
+        }
+        setLookupBusy(false);
+    }
+
+    /** 查詢佇列，第一次查詢才建。面板 dispose 時關掉。 */
+    private InventoryTasks lookups() {
+        if (lookups == null) {
+            lookups = new InventoryTasks(LOOKUP_TIMEOUT_MS,
+                "會員查詢逾時，請稍後再試", "PosAssist-VipLookup");
+        }
+        return lookups;
+    }
+
+    /**
+     * 查詢中把面板自己那兩顆會動到 POS 的按鈕停用。
+     *
+     * 刻意不停用結帳代碼鍵，也不擋 EPB 的任何操作 —— 查詢已經走自己的連線
+     * （見 VipQuery），不再有搶連線的問題，沒有理由在查詢的那幾秒裡
+     * 阻止店員加品項。停用的只是「資料正在載入、按下去會帶入半套結果」的那兩顆。
+     */
+    private void setLookupBusy(boolean busy) {
+        if (busy) {
+            codeValue.setEnabled(false);
+            createVip.setEnabled(false);
+        } else {
+            createVip.setEnabled(true);
+            // codeValue 由 show() / clear() 依這次結果決定要不要開，這裡不搶著開
+        }
     }
 
     /**
@@ -661,12 +716,32 @@ public final class FloatingPanel {
         if (phone == null) {
             return null;   // 查的是會員代碼不是電話，沒有足夠資料建立
         }
-        String reason = VipCreator.unavailableReason();
-        if (reason != null) {
-            PosLog.info("不顯示建立會員入口：" + reason);
+        if (!createAvailable()) {
             return null;
         }
         return phone;
+    }
+
+    /**
+     * 能不能建立會員。權限在一次登入裡不會變，所以只問一次。
+     *
+     * 這一問是 EPB 的權限查詢，走的是 EPB 的共用連線（不是面板自己的那條），
+     * 所以每次查無會員都問一次等於每次都去戳那條連線。照 vipCreateEnabled 的
+     * 快取模式改成一次登入問一次。跑在背景執行緒上，故用 volatile。
+     */
+    private static volatile Boolean createAvailable;
+
+    private static boolean createAvailable() {
+        Boolean cached = createAvailable;
+        if (cached == null) {
+            String reason = VipCreator.unavailableReason();
+            if (reason != null) {
+                PosLog.info("不顯示建立會員入口：" + reason);
+            }
+            cached = Boolean.valueOf(reason == null);
+            createAvailable = cached;
+        }
+        return cached.booleanValue();
     }
 
     /** 設定在一次登入裡不會變，讀一次就好，不要每查一次會員就開一次檔。 */
@@ -1052,43 +1127,68 @@ public final class FloatingPanel {
             box.add(detail);
         }
 
-        // 單號獨立一行、不截斷，而且可以點 —— 點了會記住，按 F10 自動填入
+        // 單號獨立一行、不截斷。貨已經在店裡（已到貨／保留）才給點 ——
+        // 其他狀態的單號拿去複製或帶入 F10 就是帶錯單，所以只顯示不給動。
         if (row.orderNo.length() != 0) {
-            final String orderNo = row.orderNo;
-            JButton order = new JButton(orderNo);
-            order.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 11));
-            order.setForeground(ACCENT);
-            order.setBorderPainted(false);
-            order.setContentAreaFilled(false);
-            order.setFocusPainted(false);
-            order.setFocusable(false);
-            order.setMargin(new Insets(0, 0, 0, 0));
-            order.setBorder(BorderFactory.createEmptyBorder());   // 去掉預設內距，跟上面切齊
-            order.setHorizontalAlignment(JButton.LEFT);
-            order.setAlignmentX(Component.LEFT_ALIGNMENT);
-            order.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-            order.setToolTipText("點一下記住這個單號，按 F10 開序號視窗時會自動填入預約單號欄");
-            order.addActionListener(new ActionListener() {
-                public void actionPerformed(ActionEvent event) {
-                    Safe.guard("記住預約單號", new Runnable() {
-                        public void run() {
-                            armOrder(orderNo);
-                        }
-                    });
-                }
-            });
-            box.add(order);
+            box.add(ReservationCache.readyForPickup(row.status)
+                ? orderButton(row.orderNo)
+                : orderText(row.orderNo));
         }
 
         return box;
     }
 
+    /** 可點的單號：點一下複製並記住，按 F10 自動填入。 */
+    private JButton orderButton(final String orderNo) {
+        JButton order = new JButton(orderNo);
+        order.setFont(ORDER_FONT);
+        order.setForeground(ACCENT);
+        order.setBorderPainted(false);
+        order.setContentAreaFilled(false);
+        order.setFocusPainted(false);
+        order.setFocusable(false);
+        order.setMargin(new Insets(0, 0, 0, 0));
+        order.setBorder(BorderFactory.createEmptyBorder());   // 去掉預設內距，跟上面切齊
+        order.setHorizontalAlignment(JButton.LEFT);
+        order.setAlignmentX(Component.LEFT_ALIGNMENT);
+        order.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        order.setToolTipText("點一下記住這個單號，按 F10 開序號視窗時會自動填入預約單號欄");
+        order.addActionListener(new ActionListener() {
+            public void actionPerformed(ActionEvent event) {
+                Safe.guard("記住預約單號", new Runnable() {
+                    public void run() {
+                        armOrder(orderNo);
+                    }
+                });
+            }
+        });
+        return order;
+    }
+
+    /**
+     * 不可點的單號：狀態還不是「已到貨／保留」。
+     *
+     * 刻意還是把單號顯示出來 —— 店員要對單，看得到才問得出問題；
+     * 只是灰掉並在 tooltip 說明原因，不然點不動會被當成故障回報。
+     */
+    private JLabel orderText(String orderNo) {
+        JLabel order = new JLabel(orderNo);
+        order.setFont(ORDER_FONT);
+        order.setForeground(MUTED);
+        order.setAlignmentX(Component.LEFT_ALIGNMENT);
+        order.setToolTipText("要等狀態變成「已到貨」才能複製這個單號");
+        return order;
+    }
+
     private void armOrder(String orderNo) {
-        copyToClipboard(orderNo);
+        boolean copied = copyToClipboard(orderNo);
         boolean armed = applier != null && applier.armReservationRef(orderNo);
-        status.setText(armed
-            ? "已記住單號，按 F10 會自動填入"
-            : "單號已複製，可在 F10 視窗貼上");
+        if (armed) {
+            status.setText("已記住單號，按 F10 會自動填入");
+        } else {
+            say(copied ? "單號已複製，可在 F10 視窗貼上" : "複製不成功，請手動選取",
+                copied ? MUTED : Style.DANGER);
+        }
     }
 
     /** 複製到剪貼簿。失敗回 false —— 剪貼簿被別的程式鎖住在 Windows 上是常態。 */

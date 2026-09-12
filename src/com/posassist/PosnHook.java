@@ -48,6 +48,19 @@ public final class PosnHook implements FloatingPanel.VipApplier, SidebarHost.Gua
     /** 對話框裡「預約單號」那一欄的標籤文字，用來認出是第幾個 lineRef。 */
     private static final String RESERVATION_LABEL = "預約單號";
     private static final int MAX_LINE_REF = 8;
+    /**
+     * POS 會員欄變動後延遲多久才查。
+     *
+     * 逐字輸入或條碼機掃入時，中間那幾個字元查出來的結果沒有人會看到，
+     * 卻每一次都是一趟資料庫往返。300ms 是「打完一碼的間隔」與「店員感覺不到延遲」
+     * 之間的取捨：掃描器一瞬間打完只會觸發一次，手打也不會覺得慢。
+     */
+    private static final int VIP_FOLLOW_DELAY_MS = 300;
+    /**
+     * 庫存登入身分要連續幾次一致才承認變更（timer 每秒跑一次，所以等於幾秒）。
+     * 只擋「拆側欄」這個方向 —— 建立工作區是無害的，不需要等。
+     */
+    private static final int IDENTITY_CONFIRM_TICKS = 3;
 
     private final String posInputField;
 
@@ -60,11 +73,21 @@ public final class PosnHook implements FloatingPanel.VipApplier, SidebarHost.Gua
     private Component attachedView;
     private Document watchedDocument;
     private DocumentListener watcher;
+    /** 會員欄輸入的去抖動計時器。跑在 EDT 上，所以回呼裡可以直接動面板。 */
+    private javax.swing.Timer vipFollowTimer;
     /** 自己填進去造成的變動，不要再回頭觸發一次查詢。 */
     private boolean applyingToPos;
     /** 使用者點過的預約單號，等 F10 視窗開啟時填入，用完就清掉。 */
     private volatile String armedReservationRef;
     private boolean serialWatcherInstalled;
+    private InventoryWorkspace inventoryWorkspace;
+    private javax.swing.Timer inventorySessionTimer;
+    private String failedInventoryIdentity = "";
+    /** 正在確認的登入身分。null 代表目前讀到的跟掛著的一致，沒有待確認的變動。 */
+    private String pendingIdentity;
+    private int pendingIdentityTicks;
+    private final boolean inventoryEnabled = "true".equalsIgnoreCase(
+        Home.value("config/posassist.properties", "enableInventory", "false"));
 
     public PosnHook() {
         String configured = System.getProperty("posassist.appCode");
@@ -112,8 +135,54 @@ public final class PosnHook implements FloatingPanel.VipApplier, SidebarHost.Gua
         }
 
         PosLog.info("外掛已掛上，目標 app: " + targetAppCode);
-        scanExisting(pool);
+        FloatingPanel.onEdt(new Runnable() {
+            public void run() {
+                if (inventoryEnabled) {
+                    syncInventorySession();
+                    inventorySessionTimer = new javax.swing.Timer(1000, e -> Safe.guard("庫存登入狀態", () -> syncInventorySession()));
+                    inventorySessionTimer.start();
+                }
+                scanExisting(pool);
+            }
+        });
         return true;
+    }
+
+    private void syncInventorySession() {
+        String identity = InventoryWorkspace.currentIdentity();
+        if (identity.isEmpty()) failedInventoryIdentity = "";
+        if (inventoryWorkspace != null && !inventoryWorkspace.matches(identity)) {
+            // 身分看起來變了，但這一秒讀到的值不一定可信：currentIdentity() 讀不到
+            // getUserId/getOrgId/getLocId 任一項就回空字串，而據此 detach() 會把整條
+            // 側欄拆掉。瞬時讀不到就拆，正是「側欄突然不見了」最容易發生的地方，
+            // 所以要連續看到同一個新值才承認。
+            if (!identity.equals(pendingIdentity)) {
+                pendingIdentity = identity;
+                pendingIdentityTicks = 1;
+                PosLog.info("庫存登入身分與目前不符（"
+                    + (identity.isEmpty() ? "這次讀不到" : "讀到另一組") + "），確認中");
+                return;
+            }
+            if (++pendingIdentityTicks < IDENTITY_CONFIRM_TICKS) {
+                return;
+            }
+            PosLog.info("庫存登入身分確認已變更（連續 " + IDENTITY_CONFIRM_TICKS
+                + " 次一致），卸下面板並重建庫存工作區");
+            detach();
+            inventoryWorkspace.close();
+            inventoryWorkspace = null;
+        }
+        pendingIdentity = null;
+        pendingIdentityTicks = 0;
+        if (inventoryWorkspace == null && !identity.isEmpty() && !identity.equals(failedInventoryIdentity)) {
+            try { inventoryWorkspace = new InventoryWorkspace(identity); }
+            catch (Exception error) {
+                failedInventoryIdentity = identity;
+                PosLog.warn("庫存工具掛載失敗；本次登入保留原有 POS 輔助模式");
+            }
+            Object pool = Safe.staticCall(POOL, "getInstance", new Class<?>[0], new Object[0]);
+            if (pool != null) scanExisting(pool);
+        }
     }
 
     /** addApplicationPoolListener 回 void，用實際清單確認有沒有加進去。 */
@@ -130,10 +199,13 @@ public final class PosnHook implements FloatingPanel.VipApplier, SidebarHost.Gua
             return;
         }
         for (Object application : pooled) {
+            if (inventoryWorkspace != null && "STORESUM".equals(appCodeOf(application)))
+                inventoryWorkspace.nativeApplicationEvent("applicationOpened", application);
             if (targetAppCode.equals(appCodeOf(application))) {
-                PosLog.info("補接已開啟的 " + targetAppCode);
-                attach(application);
-                return;
+                if (application != attachedApplication) {
+                    PosLog.info("補接已開啟的 " + targetAppCode);
+                    attach(application);
+                }
             }
         }
     }
@@ -153,12 +225,14 @@ public final class PosnHook implements FloatingPanel.VipApplier, SidebarHost.Gua
     // -- 事件分派 ----------------------------------------------------------
 
     private void dispatch(final String event, final Object[] args) {
-        Safe.guard("處理 " + event, new Runnable() {
+        FloatingPanel.onEdt(new Runnable() {
             public void run() {
                 Object application = args != null && args.length > 0 ? args[0] : null;
                 if (application == null) {
                     return;
                 }
+                if (inventoryWorkspace != null && "STORESUM".equals(appCodeOf(application)))
+                    inventoryWorkspace.nativeApplicationEvent(event, application);
                 if (!targetAppCode.equals(appCodeOf(application))) {
                     return;
                 }
@@ -250,11 +324,7 @@ public final class PosnHook implements FloatingPanel.VipApplier, SidebarHost.Gua
 
     private void detach() {
         PosLog.info(targetAppCode + " 已關閉");
-        attachedApplication = null;
-        posnInstance = null;
-        attachedView = null;
-        armedReservationRef = null;
-        unbindVipField();
+        clearAttachment();
 
         // 先還原側欄，再處理面板 —— 還原是最不能失敗的一步，放最前面
         final SidebarHost host = sidebar;
@@ -262,11 +332,49 @@ public final class PosnHook implements FloatingPanel.VipApplier, SidebarHost.Gua
         if (host != null) {
             Safe.guard("還原側欄", new Runnable() {
                 public void run() {
-                    host.restore();
+                    host.restore(targetAppCode + " 關閉");
                 }
             });
         }
 
+        disposePanel();
+    }
+
+    /**
+     * 看門狗自己還原了側欄之後的收尾。
+     *
+     * 沒有這一步的話，sidebar 與 panel 都還是非 null，而 attach() 只有在
+     * panel == null 時才會重建面板 —— 側欄還原了、輔助面板卻永遠回不來，
+     * 連重開 POSN 都沒用，只能重開整個 EPB。
+     */
+    public void sidebarRestored() {
+        FloatingPanel.onEdt(new Runnable() {
+            public void run() {
+                Safe.guard("看門狗還原後收尾", new Runnable() {
+                    public void run() {
+                        if (sidebar == null && panel == null) {
+                            return;
+                        }
+                        PosLog.info("側欄已由看門狗還原，清掉面板狀態，"
+                            + "下次開啟 " + targetAppCode + " 會重新掛上");
+                        sidebar = null;
+                        clearAttachment();
+                        disposePanel();
+                    }
+                });
+            }
+        });
+    }
+
+    private void clearAttachment() {
+        attachedApplication = null;
+        posnInstance = null;
+        attachedView = null;
+        armedReservationRef = null;
+        unbindVipField();
+    }
+
+    private void disposePanel() {
         final FloatingPanel closing = panel;
         panel = null;
         FloatingPanel.onEdt(new Runnable() {
@@ -465,6 +573,7 @@ public final class PosnHook implements FloatingPanel.VipApplier, SidebarHost.Gua
     public void returnFocusToPos() {
         FloatingPanel.onEdt(new Runnable() {
             public void run() {
+                if (inventoryWorkspace != null && !inventoryWorkspace.allowsPosFocus()) return;
                 // 先看焦點在不在 EPB 裡：已經在就什麼都別做。
                 // 每多動一次焦點，POSN 的 focusLost 就可能多跑一次會員驗證，
                 // 那是同步的連線動作，畫面會多停一次。
@@ -541,6 +650,16 @@ public final class PosnHook implements FloatingPanel.VipApplier, SidebarHost.Gua
 
         final Object field = vipIdField;
         watchedDocument = (Document) document;
+        // 計時器要先建好再掛 listener：反過來的話，兩件事之間進來的文件事件會撞到 null
+        vipFollowTimer = new javax.swing.Timer(VIP_FOLLOW_DELAY_MS,
+            e -> Safe.guard("會員自動跟隨", new Runnable() {
+                public void run() {
+                    if (panel != null) {
+                        panel.showMember(Safe.text(field));
+                    }
+                }
+            }));
+        vipFollowTimer.setRepeats(false);
         watcher = new DocumentListener() {
             public void insertUpdate(DocumentEvent event) {
                 push();
@@ -558,18 +677,18 @@ public final class PosnHook implements FloatingPanel.VipApplier, SidebarHost.Gua
                 if (applyingToPos) {
                     return;
                 }
-                FloatingPanel.onEdt(new Runnable() {
-                    public void run() {
-                        if (panel != null) {
-                            panel.showMember(Safe.text(field));
-                        }
-                    }
-                });
+                // 不要每一個字元都查一次：店員或條碼機打 8 碼會員代碼就是 8 次查詢，
+                // 而每次查詢都是一趟資料庫往返（實機 1–9 秒）。停手 300ms 才查。
+                // 讀成區域變數：unbind 之後才進來的事件不能把 NPE 丟回 POSN 的文件通知裡。
+                javax.swing.Timer timer = vipFollowTimer;
+                if (timer != null) {
+                    timer.restart();
+                }
             }
         };
         watchedDocument.addDocumentListener(watcher);
 
-        // 接上當下就先讀一次現值
+        // 接上當下就先讀一次現值（這一次不延遲，面板要馬上有內容）
         FloatingPanel.onEdt(new Runnable() {
             public void run() {
                 if (panel != null) {
@@ -581,6 +700,14 @@ public final class PosnHook implements FloatingPanel.VipApplier, SidebarHost.Gua
     }
 
     private void unbindVipField() {
+        if (vipFollowTimer != null) {
+            try {
+                vipFollowTimer.stop();
+            } catch (Throwable ignored) {
+                // 停不掉就算了
+            }
+            vipFollowTimer = null;
+        }
         if (watchedDocument != null && watcher != null) {
             try {
                 watchedDocument.removeDocumentListener(watcher);

@@ -120,6 +120,35 @@ public final class Safe {
         }
     }
 
+    /**
+     * 讀 private 欄位（沿繼承鏈找）。
+     *
+     * 跟上面的 field() 分開：那支用 getField，只看得到 public 欄位，POSN 的
+     * Swing 元件剛好都是 public。但診斷時要讀的 EPB 內部狀態（例如
+     * MainView.fullScreen）是 private 的，只能走 getDeclaredField。
+     *
+     * 只用於診斷 log —— 讀不到回 null，呼叫端要能接受少一項紀錄。
+     */
+    public static Object declaredField(Object target, String fieldName) {
+        if (target == null) {
+            return null;
+        }
+        for (Class<?> current = target.getClass(); current != null;
+             current = current.getSuperclass()) {
+            try {
+                java.lang.reflect.Field field = current.getDeclaredField(fieldName);
+                field.setAccessible(true);
+                return field.get(target);
+            } catch (NoSuchFieldException notHere) {
+                // 這層沒有就往上找
+            } catch (Throwable t) {
+                PosLog.warn("讀私有欄位失敗: " + current.getName() + "." + fieldName);
+                return null;
+            }
+        }
+        return null;
+    }
+
     /** 對任何有 getText() 的元件取字串，取不到回空字串。 */
     public static String text(Object component) {
         Object value = call(component, "getText");

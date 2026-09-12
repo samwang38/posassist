@@ -95,6 +95,11 @@ auto_update() {
 
   local local_ver=""
   [ -f "$SCRIPT_DIR/VERSION" ] && local_ver=$(head -1 "$SCRIPT_DIR/VERSION" | tr -d '[:space:]')
+  # 單機預覽版由試用包人工換版，不讓 latest 正式版覆蓋 jar 或啟動腳本。
+  # 不修改門市原本的 autoUpdate 偏好；裝回正式版即沿用原設定。
+  case "$local_ver" in
+    *-preview.*) log "單機預覽版 ${local_ver}，略過自動更新"; return 0 ;;
+  esac
 
   local manifest
   manifest=$(curl -fsSL --max-time "$CHECK_TIMEOUT" "$MANIFEST_URL" 2>/dev/null) || {

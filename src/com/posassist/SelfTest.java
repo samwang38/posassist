@@ -55,8 +55,31 @@ public final class SelfTest {
 
         System.out.println();
         System.out.println("[3] 唯讀查詢入口");
+        // 面板自己的查詢走這條獨立連線，不碰 EPB 的共用連線（見 VipQuery）。
+        // EPB 改版拿掉它時要在這裡先叫，而不是等門市查會員查到崩潰。
+        staticMethod("com.ipt.epbdtm.engine.Engine", "getAdHocConnection");
+        System.out.println("       會員查詢連線："
+            + (VipQuery.adHocUsable() ? "獨立連線" : "共用連線（已退回）"));
+        // 退回路徑：獨立連線拿不到時仍要能查
         method("com.ipt.epbtls.EpbApplicationUtility", "getResultList",
             "java.lang.String", "java.util.List", "int");
+        System.out.println("       庫存與調撥：" + Home.value("config/posassist.properties", "enableInventory", "false"));
+        // Feature-disabled installations retain their previous compatibility requirements.
+        if ("true".equalsIgnoreCase(Home.value("config/posassist.properties", "enableInventory", "false"))) {
+            staticMethod("com.ipt.epbfrw.EpbSharedObjects", "getTransferWsdl");
+            staticMethod("com.ipt.epbfrw.EpbSharedObjects", "getLocId");
+            staticMethod("com.ipt.epbfrw.EpbSharedObjects", "getCharset");
+            staticMethod("com.epb.persistence.utl.BusinessUtility", "isAdmin", String.class);
+            method("com.epb.trans.EPB_Trans_Client4", "fGet_Recordset", "java.lang.String", "java.lang.String");
+            method("com.epb.persistence.utl.BusinessUtility", "canViewApp", "java.lang.String", "java.lang.String", "java.lang.String");
+            method("com.epb.persistence.utl.UserAccessControl", "getStkRefCatClause", "com.epb.framework.ApplicationHome", "java.lang.String");
+            method("com.epb.framework.ApplicationPool", "openApplication", "java.lang.String", "com.epb.framework.ApplicationHome", "com.epb.framework.ValueContext");
+            method("com.epb.framework.EnquiryViewBuilder", "installCriteriaComponent", "com.epb.framework.View", "javax.swing.JComponent");
+            method("com.epb.framework.EnquiryViewBuilder", "getCurrentCriteriaItems", "com.epb.framework.View");
+            for (String name : new String[]{"getFieldName","getKeyWord","getValue","getValuesCopy","isComposed","isIncludingNull"})
+                method("com.epb.framework.CriteriaItem", name);
+            System.out.println("       上述僅檢查靜態介面；登入後原生勾選、OK、按鈕帶入仍須實機核對。");
+        }
 
         System.out.println();
         System.out.println("[4] POSN 欄位");
@@ -148,6 +171,17 @@ public final class SelfTest {
         rank("已送達", 3);
         rank("已配貨", 3);
         rank("待付款", 3);
+        // 單號可不可複製：只有貨在店裡（rank 0）才給點，後綴不能漏掉
+        pickup("已到貨", true);
+        pickup("已到貨(已遞補)", true);
+        pickup("保留", true);
+        pickup("已預約", false);
+        pickup("已取貨", false);
+        pickup("已取貨(已遞補)", false);
+        pickup("已取消", false);
+        pickup("放棄", false);
+        pickup("待付款", false);
+        pickup("", false);
 
         String probe = ReservationCache.probeConfiguredHost();
         if (probe == null) {
@@ -239,13 +273,9 @@ public final class SelfTest {
         record("Safe.call 找得到 package-private 方法",
             Safe.call(java.util.Arrays.asList(1, 2, 3), "size") != null);
 
-        // 預設顯示的欄位就是說好的那幾個，不要哪次改壞了整張表單冒出 50 欄
-        java.util.Set<String> fields = VipCreator.visibleFields();
-        record("建立表單欄位不超過 6 個（實得 " + fields.size() + "）", fields.size() <= 6);
-        for (String expected : new String[] { "name", "vipPhone1", "emailAddr",
-                                              "birthDate", "gender" }) {
-            record("建立表單有 " + expected, fields.contains(expected));
-        }
+        for (java.util.Map.Entry<String,Boolean> check : vipFieldChecks(
+                Home.value("config/posassist.properties","vipCreateFields",""), VipCreator.visibleFields()).entrySet())
+            record(check.getKey(),check.getValue());
 
         System.out.println();
         System.out.println("========================================");
@@ -297,6 +327,22 @@ public final class SelfTest {
             }
         }
         record("靜態方法 " + simple(className) + "." + methodName + "()", ok);
+    }
+
+    /** Defaults are a regression contract; configured fields are an intentional override. */
+    static java.util.Map<String,Boolean> vipFieldChecks(String configured,java.util.Set<String> fields) {
+        java.util.Map<String,Boolean> result=new java.util.LinkedHashMap<String,Boolean>();
+        if(configured.trim().isEmpty()) {
+            result.put("預設建立表單欄位不超過 6 個（實得 "+fields.size()+"）",fields.size()<=6);
+            for(String expected:new String[]{"name","vipPhone1","emailAddr","birthDate","gender"})
+                result.put("預設建立表單有 "+expected,fields.contains(expected));
+        } else {
+            java.util.Set<String> expected=new java.util.LinkedHashSet<String>();
+            for(String part:configured.split(","))if(!part.trim().isEmpty())expected.add(part.trim());
+            result.put("自訂建立表單至少有一個欄位",!expected.isEmpty());
+            result.put("建立表單符合門市自訂欄位（"+fields.size()+" 個）",fields.equals(expected));
+        }
+        return result;
     }
 
     private static void method(String className, String methodName, String... parameterTypes) {
@@ -423,6 +469,12 @@ public final class SelfTest {
         int actual = ReservationCache.statusRank(status);
         record("狀態「" + status + "」排序 " + expected
             + (actual == expected ? "" : "（實得 " + actual + "）"), actual == expected);
+    }
+
+    private static void pickup(String status, boolean expected) {
+        boolean actual = ReservationCache.readyForPickup(status);
+        record("狀態「" + status + "」" + (expected ? "可" : "不可") + "複製單號",
+            actual == expected);
     }
 
     private static void phone(String input, String expected) {

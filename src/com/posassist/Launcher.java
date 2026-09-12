@@ -22,8 +22,39 @@ public final class Launcher {
 
     public static void main(String[] args) throws Exception {
         PosLog.info("=== PosAssist 啟動 ===");
+        installCrashLogger();
         startAttachThread();
         invokeShellMain(args);
+    }
+
+    /**
+     * 把沒人接的例外寫進 posassist.log。
+     *
+     * 之前門市回報「崩潰」時，log 裡一個 stack trace 都沒有 —— 因為 Safe.guard
+     * 只攔得到外掛自己的程式碼，EPB／POSN 那側炸開的例外走的是 EPB 自己的處理，
+     * 我們既看不到也記不到。裝一個 default handler 不改變任何行為，
+     * 只是讓下一次崩潰留下可以追的證據。
+     *
+     * 刻意不覆寫已經設好的 handler：EPB 若自己裝過，那是它的事，不搶。
+     */
+    private static void installCrashLogger() {
+        try {
+            if (Thread.getDefaultUncaughtExceptionHandler() != null) {
+                return;
+            }
+            Thread.setDefaultUncaughtExceptionHandler(
+                new Thread.UncaughtExceptionHandler() {
+                    public void uncaughtException(Thread thread, Throwable error) {
+                        try {
+                            PosLog.warn("未攔截的例外（執行緒 " + thread.getName() + "）", error);
+                        } catch (Throwable ignored) {
+                            // 記不起來也不能在這裡再丟例外
+                        }
+                    }
+                });
+        } catch (Throwable t) {
+            PosLog.warn("裝不上例外記錄器", t);
+        }
     }
 
     private static void startAttachThread() {

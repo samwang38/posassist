@@ -64,6 +64,8 @@ public final class SettingsDialog {
     private final JCheckBox autoUpdateBox = new JCheckBox("開啟時自動更新到最新版");
     private final JCheckBox enableVipCreateBox =
         new JCheckBox("會員建立（試用）");
+    private final JCheckBox enableInventoryBox = new JCheckBox("庫存與調撥（SA 單機試用）");
+    private final JTextField inventoryStoreField = new JTextField("SA004");
 
     /**
      * 建立表單可以勾的欄位：{屬性名, 畫面上的名稱}。
@@ -168,6 +170,8 @@ public final class SettingsDialog {
         boolean vipCreate = panel != null
             && "true".equalsIgnoreCase(panel.getProperty("enableVipCreate", "false").trim());
         enableVipCreateBox.setSelected(vipCreate);
+        enableInventoryBox.setSelected(panel != null && "true".equalsIgnoreCase(panel.getProperty("enableInventory", "false").trim()));
+        inventoryStoreField.setText(panel == null ? "SA004" : panel.getProperty("inventoryDefaultStore", "SA004"));
         buildVipFieldBoxes(panel == null ? "" : panel.getProperty("vipCreateFields", ""));
     }
 
@@ -219,6 +223,9 @@ public final class SettingsDialog {
         vipFieldHint.setFont(vipFieldHint.getFont().deriveFont(11f));
         addHint(form, row - 1, vipFieldHint);
         syncVipFieldEnablement();
+
+        addRow(form, row++, "庫存工具", enableInventoryBox);
+        addField(form, row++, "預設收貨倉", inventoryStoreField, "SA004＝士林；啟用後重開 EPB，庫存工具可獨立於 POS 使用");
 
         root.add(form, BorderLayout.CENTER);
 
@@ -484,6 +491,11 @@ public final class SettingsDialog {
     // -- 儲存 --------------------------------------------------------------
 
     private void save() {
+        String inventoryStore = inventoryStoreField.getText().trim().toUpperCase(java.util.Locale.ROOT);
+        if (!inventoryStore.matches("SA[0-9]{3}") || inventoryStore.equals("SA999")) {
+            say("預設收貨倉請填 SA 一般門市代碼，例如 SA004", false);
+            return;
+        }
         String baseUrl = baseUrlField.getText().trim();
         String userName = userNameField.getText().trim();
         String password = currentPassword();
@@ -547,6 +559,8 @@ public final class SettingsDialog {
         managed.put("panelMode", floatingRadio.isSelected() ? "floating" : "embedded");
         managed.put("autoUpdate", String.valueOf(autoUpdateBox.isSelected()));
         managed.put("enableVipCreate", String.valueOf(enableVipCreateBox.isSelected()));
+        managed.put("enableInventory", String.valueOf(enableInventoryBox.isSelected()));
+        managed.put("inventoryDefaultStore", inventoryStoreField.getText().trim().toUpperCase(java.util.Locale.ROOT));
         String vipFields = selectedVipFields();
         if (vipFields != null) {
             managed.put("vipCreateFields", vipFields);
