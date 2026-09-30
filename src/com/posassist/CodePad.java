@@ -168,6 +168,11 @@ public final class CodePad extends JPanel {
 
     // -- 資料 --------------------------------------------------------------
 
+    /** 代碼區底下那行小字。同步狀態（例如連不上同步資料夾）也顯示在這裡。 */
+    public void setStatus(String text) {
+        status.setText(text == null || text.length() == 0 ? " " : text);
+    }
+
     /** 重新讀檔並重繪。編輯器存檔後也走這裡。 */
     public void reload() {
         items = CodeStore.load();
@@ -379,8 +384,29 @@ public final class CodePad extends JPanel {
      * 切換釘選並立刻寫檔。以代碼為準，同一個代碼在多個分類都會一起改，
      * 跟釘選檔的存法（一行一個代碼）一致。
      */
-    private void togglePin(CodeItem item) {
-        boolean target = !item.pinned;
+    private void togglePin(final CodeItem item) {
+        final boolean target = !item.pinned;
+        final CodeSync sync = CodeSync.configured();
+        if (sync != null) {
+            // 有設同步資料夾：只改這一個代碼的釘選再寫回，別台同時釘的不會被蓋掉。
+            // 碰資料夾的動作一律在背景，完成後才重讀本機、重繪。
+            status.setText("釘選同步中…");
+            CodeSync.submit(new Runnable() {
+                public void run() {
+                    final CodeSync.Result result = sync.setPinned(item.code, target);
+                    FloatingPanel.onEdt(new Runnable() {
+                        public void run() {
+                            reload();
+                            status.setText(result.outcome == CodeSync.Outcome.FAILED
+                                ? "釘選沒存起來：" + result.message
+                                : result.message != null ? result.message
+                                : target ? "已釘選 " + item.name : "已取消釘選 " + item.name);
+                        }
+                    });
+                }
+            });
+            return;
+        }
         List<CodeItem> updated = new ArrayList<CodeItem>();
         for (int i = 0; i < items.size(); i++) {
             CodeItem each = items.get(i);

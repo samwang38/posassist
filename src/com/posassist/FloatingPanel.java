@@ -277,6 +277,20 @@ public final class FloatingPanel {
             }
         });
         codePad.reload();
+        // 有設同步資料夾時，別台改了代碼這裡 30 秒內會跟上；沒設的話輪詢什麼都不做
+        CodeSync.startPolling(new CodeSync.Listener() {
+            public void synced(final CodeSync.Result result) {
+                onEdt(new Runnable() {
+                    public void run() {
+                        if (result.localChanged()) {
+                            codePad.reload();
+                            relayout();
+                        }
+                        codePad.setStatus(result.message);
+                    }
+                });
+            }
+        });
 
         if (embedded()) {
             // 上下各佔一半，分界永遠在正中間 —— 九宮格不會因為預約筆數多寡而上下跳。
@@ -562,6 +576,7 @@ public final class FloatingPanel {
 
     public void dispose() {
         detach();
+        CodeSync.stopPolling();
         if (lookups != null) {
             lookups.close();     // 在途查詢的結果不會再交付到已經拆掉的元件上
             lookups = null;

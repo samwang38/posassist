@@ -12,6 +12,7 @@ import java.awt.Insets;
 import java.awt.Window;
 import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
+import java.io.File;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -26,7 +27,9 @@ import javax.swing.ButtonGroup;
 import javax.swing.JButton;
 import javax.swing.JCheckBox;
 import javax.swing.JDialog;
+import javax.swing.JFileChooser;
 import javax.swing.JLabel;
+import javax.swing.JOptionPane;
 import javax.swing.JPanel;
 import javax.swing.JPasswordField;
 import javax.swing.JRadioButton;
@@ -66,6 +69,9 @@ public final class SettingsDialog {
         new JCheckBox("會員建立（試用）");
     private final JCheckBox enableInventoryBox = new JCheckBox("庫存與調撥（SA 單機試用）");
     private final JTextField inventoryStoreField = new JTextField("SA004");
+    private final JTextField codesSyncDirField = new JTextField();
+    /** 打開視窗時的同步資料夾。存檔時換了資料夾，才需要做第一次同步的引導。 */
+    private String originalSyncDir = "";
 
     /**
      * 建立表單可以勾的欄位：{屬性名, 畫面上的名稱}。
@@ -172,6 +178,8 @@ public final class SettingsDialog {
         enableVipCreateBox.setSelected(vipCreate);
         enableInventoryBox.setSelected(panel != null && "true".equalsIgnoreCase(panel.getProperty("enableInventory", "false").trim()));
         inventoryStoreField.setText(panel == null ? "SA004" : panel.getProperty("inventoryDefaultStore", "SA004"));
+        originalSyncDir = panel == null ? "" : panel.getProperty(CodeSync.DIR_KEY, "").trim();
+        codesSyncDirField.setText(originalSyncDir);
         buildVipFieldBoxes(panel == null ? "" : panel.getProperty("vipCreateFields", ""));
     }
 
@@ -226,6 +234,31 @@ public final class SettingsDialog {
 
         addRow(form, row++, "庫存工具", enableInventoryBox);
         addField(form, row++, "預設收貨倉", inventoryStoreField, "SA004＝士林；啟用後重開 EPB，庫存工具可獨立於 POS 使用");
+
+        JLabel syncHeading = new JLabel("結帳代碼同步");
+        syncHeading.setFont(syncHeading.getFont().deriveFont(Font.BOLD, 14f));
+        addSection(form, row++, syncHeading);
+        JPanel syncRow = new JPanel(new BorderLayout(6, 0));
+        codesSyncDirField.setPreferredSize(new Dimension(220, 26));
+        syncRow.add(codesSyncDirField, BorderLayout.CENTER);
+        JPanel syncButtons = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+        syncButtons.add(button("選擇…", new Runnable() {
+            public void run() {
+                chooseSyncDir();
+            }
+        }));
+        syncButtons.add(button("測試", new Runnable() {
+            public void run() {
+                testSyncDir();
+            }
+        }));
+        syncRow.add(syncButtons, BorderLayout.EAST);
+        addRow(form, row++, "共用資料夾", syncRow);
+        JLabel syncHint = new JLabel("同一間門市的每台 POS 指到同一個資料夾（NAS 或 iCloud Drive）；"
+            + "一個資料夾只給一間店。留空＝只存在這台。");
+        syncHint.setForeground(MUTED);
+        syncHint.setFont(syncHint.getFont().deriveFont(11f));
+        addHint(form, row - 1, syncHint);
 
         root.add(form, BorderLayout.CENTER);
 
@@ -522,8 +555,83 @@ public final class SettingsDialog {
             say(problem, false);
             return;
         }
+        String syncDir = codesSyncDirField.getText().trim();
+        if (syncDir.length() != 0 && !syncDir.equals(originalSyncDir)) {
+            firstSync(new File(syncDir));
+        }
         saved = true;
         dialog.dispose();
+    }
+
+    // -- 結帳代碼同步 ------------------------------------------------------
+
+    private void chooseSyncDir() {
+        JFileChooser chooser = new JFileChooser(codesSyncDirField.getText().trim());
+        chooser.setFileSelectionMode(JFileChooser.DIRECTORIES_ONLY);
+        chooser.setDialogTitle("選擇結帳代碼的共用資料夾");
+        if (chooser.showOpenDialog(dialog) == JFileChooser.APPROVE_OPTION) {
+            codesSyncDirField.setText(chooser.getSelectedFile().getAbsolutePath());
+        }
+    }
+
+    /** 實際寫一個測試檔再刪掉。探測本身有 3 秒逾時，不會把視窗卡死。 */
+    private void testSyncDir() {
+        String dir = codesSyncDirField.getText().trim();
+        if (dir.length() == 0) {
+            say("還沒填共用資料夾", false);
+            return;
+        }
+        String problem = CodeSync.checkWritable(new File(dir));
+        if (problem != null) {
+            say("共用資料夾：" + problem, false);
+            return;
+        }
+        boolean hasCodes = new File(dir, CodeStore.CODES_FILE).isFile();
+        say("共用資料夾可以讀寫" + (hasCodes ? "，裡面已經有結帳代碼" : "，裡面還沒有結帳代碼"), true);
+    }
+
+    /**
+     * 換了同步資料夾之後的第一次同步。資料夾是空的就問要不要把這台的放上去
+     * （不問的話會一直沒有人放，別台也同步不到）；已經有代碼就告知這台會改用那一份。
+     */
+    private void firstSync(File dir) {
+        CodeSync sync = new CodeSync(dir, CodeStore.localDir());
+        if (!CodeSync.reachable(dir)) {
+            JOptionPane.showMessageDialog(dialog,
+                "共用資料夾現在連不上，連上之後會自動同步。", "結帳代碼同步",
+                JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+        if (!new File(dir, CodeStore.CODES_FILE).isFile()) {
+            List<CodeItem> local = CodeStore.load();
+            if (local.isEmpty()) {
+                return;
+            }
+            int answer = JOptionPane.showConfirmDialog(dialog,
+                "共用資料夾裡還沒有結帳代碼。\n要把這台的 " + local.size()
+                    + " 筆代碼放上去，讓同店其他台共用嗎？",
+                "結帳代碼同步", JOptionPane.YES_NO_OPTION, JOptionPane.QUESTION_MESSAGE);
+            if (answer == JOptionPane.YES_OPTION) {
+                report(sync.push(local, sync.syncedFingerprint(), false), "已把這台的代碼放上共用資料夾");
+            }
+            return;
+        }
+        JOptionPane.showMessageDialog(dialog,
+            "共用資料夾裡已經有結帳代碼，這台會改用那一份。\n"
+                + "這台原本的代碼會留在 config/codes.txt.bak。",
+            "結帳代碼同步", JOptionPane.INFORMATION_MESSAGE);
+        report(sync.pull(), null);
+    }
+
+    private void report(CodeSync.Result result, String success) {
+        boolean ok = result.outcome == CodeSync.Outcome.SAVED
+            || result.outcome == CodeSync.Outcome.UPDATED
+            || result.outcome == CodeSync.Outcome.UNCHANGED;
+        String text = ok ? success : result.message;
+        if (text != null) {
+            JOptionPane.showMessageDialog(dialog, text, "結帳代碼同步",
+                ok ? JOptionPane.INFORMATION_MESSAGE : JOptionPane.WARNING_MESSAGE);
+        }
     }
 
     private String writeReservation(String baseUrl, String userName, String password) {
@@ -561,6 +669,7 @@ public final class SettingsDialog {
         managed.put("enableVipCreate", String.valueOf(enableVipCreateBox.isSelected()));
         managed.put("enableInventory", String.valueOf(enableInventoryBox.isSelected()));
         managed.put("inventoryDefaultStore", inventoryStoreField.getText().trim().toUpperCase(java.util.Locale.ROOT));
+        managed.put(CodeSync.DIR_KEY, escape(codesSyncDirField.getText().trim()));
         String vipFields = selectedVipFields();
         if (vipFields != null) {
             managed.put("vipCreateFields", vipFields);

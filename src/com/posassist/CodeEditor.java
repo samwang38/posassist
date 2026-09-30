@@ -54,7 +54,12 @@ public final class CodeEditor {
     private static final String[] SEARCH_COLUMNS = { "分類", "名稱", "代碼", "釘選" };
 
     private final JDialog dialog;
-    private final CodeTree tree;
+    private CodeTree tree;
+    /** 有設同步資料夾才有值。base 是打開編輯器時本機對應的同步版本，存檔時拿來判斷別台改過沒有。 */
+    private final CodeSync sync = CodeSync.configured();
+    private String base;
+    /** 背景存檔中：擋住畫面操作，也不讓人關視窗。 */
+    private boolean busy;
     private final DefaultTreeModel treeModel = new DefaultTreeModel(new DefaultMutableTreeNode());
     private final JTree categoryTree = new JTree(treeModel);
     private final Model model = new Model();
@@ -81,6 +86,7 @@ public final class CodeEditor {
 
     public CodeEditor(Window owner) {
         tree = CodeTree.of(CodeStore.load());
+        base = sync == null ? null : sync.syncedFingerprint();
 
         categoryTree.setRootVisible(false);
         categoryTree.setShowsRootHandles(true);
@@ -121,6 +127,7 @@ public final class CodeEditor {
         dialog = new JDialog(owner, "編輯結帳代碼", JDialog.ModalityType.APPLICATION_MODAL);
         dialog.setDefaultCloseOperation(JDialog.DO_NOTHING_ON_CLOSE);
         dialog.setContentPane(buildContent());
+        dialog.setGlassPane(buildBusyPane());
         dialog.setSize(820, 540);
         dialog.setMinimumSize(new Dimension(640, 400));
         dialog.setLocationRelativeTo(owner);
@@ -707,6 +714,10 @@ public final class CodeEditor {
             return;
         }
         List<CodeItem> items = tree.flatten();
+        if (sync != null) {
+            push(items, false);
+            return;
+        }
         String problem = CodeStore.save(items);
         if (problem != null) {
             message.setText(problem);
@@ -724,7 +735,111 @@ public final class CodeEditor {
         dialog.dispose();
     }
 
+    /** 存到同步資料夾。碰資料夾的動作在背景做，結果回到 EDT 再處理。 */
+    private void push(final List<CodeItem> items, final boolean force) {
+        setBusy(true, "儲存中…");
+        CodeSync.submit(new Runnable() {
+            public void run() {
+                CodeSync.Result result;
+                try {
+                    result = sync.push(items, base, force);
+                } catch (Throwable t) {
+                    PosLog.warn("同步存檔失敗", t);
+                    result = new CodeSync.Result(CodeSync.Outcome.FAILED, "儲存失敗");
+                }
+                final CodeSync.Result done = result;
+                FloatingPanel.onEdt(new Runnable() {
+                    public void run() {
+                        pushed(items, done);
+                    }
+                });
+            }
+        });
+    }
+
+    private void pushed(List<CodeItem> items, CodeSync.Result result) {
+        setBusy(false, " ");
+        switch (result.outcome) {
+            case SAVED:
+                saved = true;
+                dirty = false;
+                dialog.dispose();
+                return;
+            case OFFLINE:
+                saved = true;
+                dirty = false;
+                JOptionPane.showMessageDialog(dialog, result.message, "編輯結帳代碼",
+                    JOptionPane.INFORMATION_MESSAGE);
+                dialog.dispose();
+                return;
+            case CONFLICT:
+                Object[] options = { "用我的覆蓋", "載入別台的版本", "取消" };
+                int answer = JOptionPane.showOptionDialog(dialog,
+                    "你打開編輯器之後，別台已經改過結帳代碼。\n"
+                    + "「用我的覆蓋」會蓋掉別台的修改；「載入別台的版本」會放棄你這次的修改。",
+                    "別台已經改過", JOptionPane.DEFAULT_OPTION, JOptionPane.WARNING_MESSAGE,
+                    null, options, options[2]);
+                if (answer == 0) {
+                    push(items, true);
+                } else if (answer == 1) {
+                    reloadFromFolder();
+                } else {
+                    message.setText("還沒儲存");
+                }
+                return;
+            default:
+                message.setText(result.message == null ? "儲存失敗" : result.message);
+        }
+    }
+
+    /** 衝突時選了「載入別台的版本」：拉下來、整棵重建，讓人在最新版上重新改。 */
+    private void reloadFromFolder() {
+        setBusy(true, "載入中…");
+        CodeSync.submit(new Runnable() {
+            public void run() {
+                final CodeSync.Result result = sync.pull();
+                FloatingPanel.onEdt(new Runnable() {
+                    public void run() {
+                        setBusy(false, " ");
+                        saved = true;      // 本機代碼換過了，關掉時面板要重新載入
+                        dirty = false;
+                        tree = CodeTree.of(CodeStore.load());
+                        base = sync.syncedFingerprint();
+                        search.setText("");
+                        List<String> categories = tree.categories();
+                        rebuildTree(categories.isEmpty() ? null : categories.get(0),
+                            CodeTree.LOOSE);
+                        message.setText(result.outcome == CodeSync.Outcome.UPDATED
+                            ? "已載入別台的版本，剛才的修改沒有存，請重新修改"
+                            : result.message == null ? "已重新載入" : result.message);
+                    }
+                });
+            }
+        });
+    }
+
+    /** 蓋在整個視窗上的透明層：存檔中吃掉滑鼠、顯示等待游標。 */
+    private JComponent buildBusyPane() {
+        JPanel pane = new JPanel();
+        pane.setOpaque(false);
+        pane.addMouseListener(new java.awt.event.MouseAdapter() {
+        });
+        pane.addMouseMotionListener(new java.awt.event.MouseMotionAdapter() {
+        });
+        pane.setCursor(java.awt.Cursor.getPredefinedCursor(java.awt.Cursor.WAIT_CURSOR));
+        return pane;
+    }
+
+    private void setBusy(boolean value, String text) {
+        busy = value;
+        dialog.getGlassPane().setVisible(value);
+        message.setText(text);
+    }
+
     private void cancel() {
+        if (busy) {
+            return;
+        }
         stopEditing();
         if (dirty) {
             int answer = JOptionPane.showConfirmDialog(dialog,

@@ -110,6 +110,11 @@ public final class SelfTest {
               + CodeStore.categories(CodeStore.load()).size() + " 個分類，"
               + CodeStore.pinned(CodeStore.load()).size() + " 筆釘選"
             : "未設定（面板會提示按編輯新增）"));
+        // 同步資料夾連不上不算失敗：面板會照常用本機那份，這裡只是讓人知道現況
+        CodeSync sync = CodeSync.configured();
+        System.out.println("       同步：" + (sync == null ? "未設定（只存在這台）"
+            : sync.remoteDir() + (CodeSync.reachable(sync.remoteDir()) ? "，可連線" : "，目前連不上")
+              + (sync.hasPending() ? "，有修改尚未上傳" : "")));
         // 欄位規則：分隔符號是 |，所以三個欄位都不能含它
         codeValid("常用|環保紙袋|07310011 可用", "常用", "環保紙袋", "07310011", true);
         codeValid("名稱空白要擋", "常用", "", "07310011", false);

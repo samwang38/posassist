@@ -67,6 +67,13 @@ autoUpdate=true
 # 只有版面不同的門市才需要改。
 #posInputField=pluIdTextField
 
+# 結帳代碼同步：同一間門市的每台 POS 指到同一個共用資料夾（NAS 或 iCloud Drive），
+# 任何一台改了代碼或釘選，其他台 30 秒內會跟上。一個資料夾只給一間店。
+# 資料夾連不上時面板照常用這台最後一份；離線時存的修改會等連上再上傳，
+# 若這段期間別台也改過，以資料夾為準，這台那份另存成 codes.txt.conflict-<時間>。
+# 通常用設定視窗的「共用資料夾」設定就好。留空＝只存在這台。
+#codesSyncDir=/Volumes/StoreNAS/PosAssist/SA004
+
 # F10 序號視窗裡「預約單號」的欄位。預設會自動用標籤文字去認，
 # 認不到才會用這個值。
 #reservationRefField=lineRef7TextField

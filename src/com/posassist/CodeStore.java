@@ -26,11 +26,10 @@ import java.util.Set;
  */
 public final class CodeStore {
 
-    static final String PATH = "config/codes.txt";
-    private static final String BACKUP_PATH = "config/codes.txt.bak";
-    private static final String TEMP_PATH = "config/codes.txt.tmp";
-    static final String PINS_PATH = "config/codes.pins.txt";
-    private static final String PINS_TEMP_PATH = "config/codes.pins.txt.tmp";
+    /** 本機 config/ 與同步資料夾用同一組檔名，格式也完全相同。 */
+    static final String CODES_FILE = "codes.txt";
+    static final String BACKUP_FILE = "codes.txt.bak";
+    static final String PINS_FILE = "codes.pins.txt";
     private static final String CHARSET = "UTF-8";
 
     private static final String HEADER =
@@ -48,14 +47,23 @@ public final class CodeStore {
     private CodeStore() {
     }
 
+    /** 本機的設定目錄。畫面永遠讀這裡 —— 有設同步資料夾時它就是同步下來的快取。 */
+    static File localDir() {
+        return Home.file("config");
+    }
+
     public static boolean exists() {
-        return Home.file(PATH).isFile();
+        return new File(localDir(), CODES_FILE).isFile();
     }
 
     /** 讀清單；沒有檔案或讀不到都回空清單，面板照常運作。 */
     public static List<CodeItem> load() {
+        return loadFrom(localDir());
+    }
+
+    static List<CodeItem> loadFrom(File dir) {
         List<CodeItem> items = new ArrayList<CodeItem>();
-        File file = Home.file(PATH);
+        File file = new File(dir, CODES_FILE);
         if (!file.isFile()) {
             return items;
         }
@@ -86,13 +94,17 @@ public final class CodeStore {
         if (skipped > 0) {
             PosLog.warn("代碼清單有 " + skipped + " 行格式不符，已略過");
         }
-        return applyPins(items, loadPins());
+        return applyPins(items, loadPinsFrom(dir));
     }
 
     /** 讀釘選的代碼；沒有檔案或讀不到都回空集合，面板就是全部都沒釘。 */
     public static Set<String> loadPins() {
+        return loadPinsFrom(localDir());
+    }
+
+    static Set<String> loadPinsFrom(File dir) {
         Set<String> codes = new LinkedHashSet<String>();
-        File file = Home.file(PINS_PATH);
+        File file = new File(dir, PINS_FILE);
         if (!file.isFile()) {
             return codes;
         }
@@ -210,6 +222,10 @@ public final class CodeStore {
      * 先備份 → 寫暫存 → rename，任何一步失敗都不會動到原檔。
      */
     public static String save(List<CodeItem> items) {
+        return saveTo(localDir(), items);
+    }
+
+    static String saveTo(File dir, List<CodeItem> items) {
         if (items == null) {
             return "沒有可儲存的內容";
         }
@@ -220,25 +236,24 @@ public final class CodeStore {
             }
         }
 
-        File target = Home.file(PATH);
-        File temp = Home.file(TEMP_PATH);
-        File backup = Home.file(BACKUP_PATH);
-        File dir = target.getParentFile();
-        if (dir != null && !dir.isDirectory() && !dir.mkdirs()) {
+        File target = new File(dir, CODES_FILE);
+        File backup = new File(dir, BACKUP_FILE);
+        if (!dir.isDirectory() && !dir.mkdirs()) {
             return "建立不了設定目錄";
         }
 
-        if (!writeTo(temp, items)) {
-            temp.delete();
+        File temp = tempIn(dir);
+        if (temp == null || !writeTo(temp, items)) {
+            delete(temp);
             return "寫入暫存檔失敗";
         }
         if (target.isFile() && !copy(target, backup)) {
-            temp.delete();
+            delete(temp);
             return "備份舊檔失敗，未變更任何內容";
         }
         // rename 是原子的：要嘛整份換過去，要嘛完全沒動
         if (!rename(temp, target)) {
-            temp.delete();
+            delete(temp);
             return "更新檔案失敗，原本的設定沒有被動到";
         }
         PosLog.info("代碼清單已儲存：" + items.size() + " 筆");
@@ -250,44 +265,88 @@ public final class CodeStore {
      * 面板上直接切換釘選走這裡 —— 沒必要為了一個置頂就整份代碼重寫一次。
      */
     public static String savePins(List<CodeItem> items) {
+        return savePinsTo(localDir(), items);
+    }
+
+    static String savePinsTo(File dir, List<CodeItem> items) {
         if (items == null) {
             return "沒有可儲存的內容";
         }
-        File target = Home.file(PINS_PATH);
-        File temp = Home.file(PINS_TEMP_PATH);
-        File dir = target.getParentFile();
-        if (dir != null && !dir.isDirectory() && !dir.mkdirs()) {
+        // 同一個代碼在兩個分類各放一筆時，釘選檔只需要一行
+        Set<String> codes = new LinkedHashSet<String>();
+        List<CodeItem> marked = pinned(items);
+        for (int i = 0; i < marked.size(); i++) {
+            codes.add(marked.get(i).code);
+        }
+        return savePinCodesTo(dir, codes);
+    }
+
+    /** 直接寫一組釘選代碼。同步時合併別台的釘選要走這裡，不經過完整清單。 */
+    static String savePinCodesTo(File dir, Set<String> codes) {
+        File target = new File(dir, PINS_FILE);
+        if (!dir.isDirectory() && !dir.mkdirs()) {
             return "建立不了設定目錄";
         }
-
-        List<CodeItem> marked = pinned(items);
-        if (marked.isEmpty() && !target.isFile()) {
+        if (codes.isEmpty() && !target.isFile()) {
             return null;   // 本來就沒釘過，不必生一個空檔
         }
-        if (!writePins(temp, marked)) {
-            temp.delete();
+        File temp = tempIn(dir);
+        if (temp == null || !writePins(temp, codes)) {
+            delete(temp);
             return "寫入釘選暫存檔失敗";
         }
         if (!rename(temp, target)) {
-            temp.delete();
+            delete(temp);
             return "更新釘選清單失敗";
         }
-        PosLog.info("釘選清單已儲存：" + marked.size() + " 筆");
+        PosLog.info("釘選清單已儲存：" + codes.size() + " 筆");
         return null;
     }
 
-    private static boolean writePins(File file, List<CodeItem> marked) {
+    /**
+     * 把一個檔案原樣換成指定內容（暫存檔＋rename）。backup 不為 null 時先把舊檔複製過去。
+     * 同步時把別台的檔案搬進本機、或把本機的搬上同步資料夾都走這裡 —— 逐位元組搬，註解也保留。
+     * 成功回 null，失敗回可讀原因。
+     */
+    static String replaceFile(File target, byte[] content, File backup) {
+        File dir = target.getParentFile();
+        if (dir != null && !dir.isDirectory() && !dir.mkdirs()) {
+            return "建立不了目錄";
+        }
+        File temp = tempIn(dir);
+        if (temp == null) {
+            return "寫入暫存檔失敗";
+        }
+        java.io.OutputStream out = null;
+        try {
+            out = new FileOutputStream(temp);
+            out.write(content);
+            out.flush();
+        } catch (Throwable t) {
+            closeQuietly(out);
+            delete(temp);
+            return "寫入暫存檔失敗";
+        }
+        closeQuietly(out);
+        if (backup != null && target.isFile() && !copy(target, backup)) {
+            delete(temp);
+            return "備份舊檔失敗，未變更任何內容";
+        }
+        if (!rename(temp, target)) {
+            delete(temp);
+            return "更新檔案失敗，原本的內容沒有被動到";
+        }
+        return null;
+    }
+
+    private static boolean writePins(File file, Set<String> codes) {
         PrintWriter writer = null;
         try {
             writer = new PrintWriter(
                 new OutputStreamWriter(new FileOutputStream(file), CHARSET));
             writer.print(PINS_HEADER);
-            Set<String> written = new LinkedHashSet<String>();
-            for (int i = 0; i < marked.size(); i++) {
-                // 同一個代碼在兩個分類各放一筆時，釘選檔只需要一行
-                if (written.add(marked.get(i).code)) {
-                    writer.println(marked.get(i).code);
-                }
+            for (String code : codes) {
+                writer.println(code);
             }
             writer.flush();
             return !writer.checkError();
@@ -354,7 +413,47 @@ public final class CodeStore {
         }
     }
 
+    /**
+     * 暫存檔用唯一檔名：同步資料夾是好幾台一起寫的，固定叫 codes.txt.tmp 會互相踩到。
+     * 以 . 開頭，iCloud／Finder 預設不顯示，也不會被當成代碼檔。
+     */
+    private static File tempIn(File dir) {
+        try {
+            return File.createTempFile(".codes-", ".tmp", dir);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private static void delete(File file) {
+        if (file != null) {
+            file.delete();
+        }
+    }
+
+    private static void closeQuietly(java.io.Closeable closeable) {
+        try {
+            if (closeable != null) {
+                closeable.close();
+            }
+        } catch (Throwable ignored) {
+            // 關不掉就算了
+        }
+    }
+
+    /**
+     * 先試原子取代：這樣別台同一時間來讀，看到的不是舊檔就是新檔，不會剛好碰上「檔案不見了」。
+     * 檔案系統不支援時才退回舊做法（先刪再改名）。
+     */
     private static boolean rename(File from, File to) {
+        try {
+            java.nio.file.Files.move(from.toPath(), to.toPath(),
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+            return true;
+        } catch (Throwable atomicFailed) {
+            // 往下退回舊做法
+        }
         try {
             if (to.isFile() && !to.delete()) {
                 return false;
