@@ -80,6 +80,11 @@ public final class SidebarHost {
 
     private JSplitPane splitPane;
     private Component originalLeft;
+    /**
+     * 掛載前原生側欄的可見性。CardLayout 會把沒選中的卡 setVisible(false)，
+     * 還原時一定要設回來 —— 不然掛回去的是隱形元件，左欄整塊消失，EPB 的全螢幕鈕也救不回來。
+     */
+    private boolean originalVisible = true;
     /** 我們塞進 splitPane 左邊的那個容器。要比對「現在左邊還是我們嗎」時用。 */
     private JPanel hostPanel;
     /**
@@ -153,6 +158,7 @@ public final class SidebarHost {
         try {
             splitPane = found;
             originalLeft = left;
+            originalVisible = left.isVisible();
 
             cardLayout = new CardLayout();
             cards = new JPanel(cardLayout);
@@ -450,6 +456,8 @@ public final class SidebarHost {
         final JSplitPane pane = splitPane;
         final Component original = originalLeft;
         final JPanel container = cards;
+        final boolean visible = originalVisible;
+        final int lastWidth = lastGoodDivider;
 
         mounted = false;
         stopWatchdog();
@@ -471,12 +479,28 @@ public final class SidebarHost {
                     // 拿不掉沒關係，setLeftComponent 也會重新指定父容器
                 }
                 try {
+                    original.setVisible(visible);
+                } catch (Throwable t) {
+                    PosLog.warn("設回原生側欄可見性失敗", t);
+                }
+                try {
                     pane.setLeftComponent(original);
-                    pane.revalidate();
-                    pane.repaint();
-                    PosLog.info("左側欄已還原（原因：" + why + "）");
+                    PosLog.info("左側欄已還原（原因：" + why + "，可見=" + original.isVisible() + "）");
                 } catch (Throwable t) {
                     PosLog.warn("還原左側欄失敗（原因：" + why + "）", t);
+                }
+                try {
+                    // 還原當下被壓成 0 寬的話，掛回去也看不到。EPB 全螢幕（dividerSize=0）不介入。
+                    if (pane.getDividerLocation() <= MIN_VISIBLE_WIDTH
+                        && pane.getDividerSize() > 0 && lastWidth > MIN_VISIBLE_WIDTH) {
+                        PosLog.warn("還原時側欄寬度為 " + pane.getDividerLocation()
+                            + "，設回 " + lastWidth);
+                        pane.setDividerLocation(lastWidth);
+                    }
+                    pane.revalidate();
+                    pane.repaint();
+                } catch (Throwable t) {
+                    PosLog.warn("還原側欄寬度失敗", t);
                 }
                 clear();
             }
@@ -497,6 +521,7 @@ public final class SidebarHost {
     private void clear() {
         splitPane = null;
         originalLeft = null;
+        originalVisible = true;
         hostPanel = null;
         lastGoodDivider = 0;
         reportedCollapse = false;

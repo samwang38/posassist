@@ -237,6 +237,13 @@ public final class PosnHook implements FloatingPanel.VipApplier, SidebarHost.Gua
                     return;
                 }
                 if ("applicationOpened".equals(event) || "applicationActivated".equals(event)) {
+                    // ApplicationPool 是先 action() 再發 opened：app 在 action() 裡就自己關掉
+                    // （例如沒權限）時，會先收到 closed 才收到 opened。這時再掛上去，
+                    // 面板就掛在一個已經關掉的 app 上，只能等看門狗拆。
+                    if (Boolean.FALSE.equals(inPool(application))) {
+                        PosLog.info(targetAppCode + " 已不在 ApplicationPool，忽略 " + event);
+                        return;
+                    }
                     if (application != attachedApplication) {
                         attach(application);
                     }
@@ -314,12 +321,15 @@ public final class PosnHook implements FloatingPanel.VipApplier, SidebarHost.Gua
         if (attachedApplication == null) {
             return false;
         }
+        Boolean pooled = inPool(attachedApplication);
+        return pooled == null || pooled.booleanValue();      // 問不到就不要亂拆
+    }
+
+    /** application 還在 ApplicationPool 裡嗎。讀不到 pool 回 null，由呼叫端決定怎麼保守。 */
+    private static Boolean inPool(Object application) {
         Object pool = Safe.staticCall(POOL, "getInstance", new Class<?>[0], new Object[0]);
         Collection<?> pooled = pool == null ? null : readCollection(pool, "pooledApplications");
-        if (pooled == null) {
-            return true;      // 問不到就不要亂拆
-        }
-        return pooled.contains(attachedApplication);
+        return pooled == null ? null : Boolean.valueOf(pooled.contains(application));
     }
 
     private void detach() {

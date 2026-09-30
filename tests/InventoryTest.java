@@ -151,7 +151,38 @@ public final class InventoryTest {
             check(host.mountOn(split,assist,inventory),"three-card sidebar mounts");host.showInventory();check(host.inventorySelected(),"inventory selected");
             host.showHome();check(!host.inventorySelected(),"native home selectable");host.restore();check(split.getLeftComponent()==nativeLeft,"same native component restored");host.restore();
             sidebarCollapseGuard();
+            sidebarRestoreFromAssistCard();
         });
+    }
+    /**
+     * 門市回報：停在「輔助工具」頁時關掉 POS，原生側欄整塊消失、叫不回來。
+     * CardLayout 會把沒選中的卡 setVisible(false)，還原時沒設回來，左欄就是一個隱形元件。
+     */
+    static void sidebarRestoreFromAssistCard(){
+        JPanel nativeLeft=new JPanel(),right=new JPanel();
+        JSplitPane split=new JSplitPane(JSplitPane.HORIZONTAL_SPLIT,nativeLeft,right);
+        split.setSize(900,600);split.setDividerLocation(300);
+        SidebarHost host=new SidebarHost(()->true);
+        check(host.mountOn(split,new JPanel(),new JPanel()),"assist-card fixture mounts");
+        host.restore("test");
+        check(split.getLeftComponent()==nativeLeft,"native sidebar back after restore from assist card");
+        check(nativeLeft.isVisible(),"native sidebar visible after restore from assist card");
+
+        nativeLeft=new JPanel();split=new JSplitPane(JSplitPane.HORIZONTAL_SPLIT,nativeLeft,right);
+        split.setSize(900,600);split.setDividerLocation(300);
+        host=new SidebarHost(()->true);
+        check(host.mountOn(split,new JPanel(),new JPanel()),"inventory-card fixture mounts");
+        host.showInventory();host.restore("test");
+        check(nativeLeft.isVisible(),"native sidebar visible after restore from inventory card");
+
+        // 還原當下側欄被壓成 0 寬（不是 EPB 全螢幕）：要回到上次的寬度，不然還原了也看不到
+        nativeLeft=new JPanel();split=new JSplitPane(JSplitPane.HORIZONTAL_SPLIT,nativeLeft,right);
+        split.setSize(900,600);split.setDividerLocation(300);
+        host=new SidebarHost(()->true);
+        check(host.mountOn(split,new JPanel(),new JPanel()),"collapsed fixture mounts");
+        split.setDividerLocation(260);split.setDividerLocation(0);
+        host.restore("test");
+        check(split.getDividerLocation()==260,"collapsed sidebar reopened to last width on restore");
     }
     /**
      * 側欄被壓成 0 寬時要自己站回來，但 EPB 自己的全螢幕（dividerSize 也是 0）不能干涉。

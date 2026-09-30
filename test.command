@@ -9,4 +9,5 @@ mkdir -p "$REPO/build/tests"
 "$JDK/bin/java" -Djava.awt.headless=true -cp "$REPO/build:$REPO/build/tests" com.posassist.InventoryTest
 "$JDK/bin/java" -Djava.awt.headless=true -cp "$REPO/build:$REPO/build/tests" com.posassist.SelfTestConfigTest
 "$JDK/bin/java" -Djava.awt.headless=true -cp "$REPO/build:$REPO/build/tests" com.posassist.VipQueryTest
+"$JDK/bin/java" -Djava.awt.headless=true -cp "$REPO/build:$REPO/build/tests" com.posassist.CodeTreeTest
 bash "$REPO/tests/preview-update.sh"
