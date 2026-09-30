@@ -69,6 +69,20 @@ public final class CodePad extends JPanel {
         }
     };
     private final Component pinnedGap = javax.swing.Box.createVerticalStrut(4);
+    /**
+     * 剛掃進 POS 的主機有關聯存貨（AppleCare+）時，在代碼區最上面多一段。
+     * 跟代碼鍵同一種按鈕、按一下就帶入，操作跟按結帳代碼完全一樣。平常收起來。
+     */
+    private final JLabel relatedLabel = sectionLabel(" ");
+    private final JPanel relatedGrid = new JPanel(new CellGrid()) {
+        public Dimension getMaximumSize() {
+            return new Dimension(Integer.MAX_VALUE, getPreferredSize().height);
+        }
+    };
+    // 比釘選列的間距大一截：兩段都在最上面，要看得出是兩組
+    private final Component relatedGap = javax.swing.Box.createVerticalStrut(10);
+    /** 目前提示中的關聯存貨代碼；它們出現在 POS 明細裡就收起來。 */
+    private final java.util.Set<String> relatedCodes = new java.util.HashSet<String>();
     private final JPanel grid = new JPanel();
     private final JLabel status = new JLabel(" ");
     private final JScrollPane scroller;
@@ -105,6 +119,13 @@ public final class CodePad extends JPanel {
         top.setLayout(new BoxLayout(top, BoxLayout.Y_AXIS));
         pinnedGrid.setOpaque(false);
         pinnedGrid.setAlignmentX(Component.LEFT_ALIGNMENT);
+        relatedGrid.setOpaque(false);
+        relatedGrid.setAlignmentX(Component.LEFT_ALIGNMENT);
+        relatedLabel.setForeground(Style.HINT);
+        top.add(relatedLabel);
+        top.add(relatedGrid);
+        top.add(relatedGap);
+        setRelatedVisible(false);
         top.add(pinnedGrid);
         top.add(pinnedGap);
         tabBar.setOpaque(false);
@@ -306,43 +327,14 @@ public final class CodePad extends JPanel {
      * 改成把兩個置中的 JLabel 放進按鈕裡，寬度由我們自己控制，各種 L&F 都一致。
      */
     private JButton keyButton(final CodeItem item) {
-        JButton button = new Key(item.pinned);
-        button.setFocusable(false);
-        button.setLayout(new BoxLayout(button, BoxLayout.Y_AXIS));
-        // 內距靠 border 給，外框自己畫；不能用 L&F 的邊框，各家厚度差很多
-        button.setBorder(BorderFactory.createEmptyBorder(3, 2, 3, 2));
-        button.setMargin(new Insets(0, 0, 0, 0));
-        button.setPreferredSize(new Dimension(MIN_CELL, BUTTON_HEIGHT));
-        button.setToolTipText(item.name + "（" + item.code + "）點一下帶入 POS，"
-            + (item.pinned ? "右鍵可取消釘選" : "右鍵可釘選到最上面"));
-        button.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-
-        // 上下各留一段可伸縮的空白，剩餘高度平均分掉，文字才會落在格子正中間
-        button.add(javax.swing.Box.createVerticalGlue());
-
-        JLabel name = new JLabel(item.name);
-        name.setFont(name.getFont().deriveFont(Font.BOLD, 11f));
-        name.setForeground(item.pinned ? ACCENT : Style.TEXT);
-        name.setAlignmentX(Component.CENTER_ALIGNMENT);
-        button.add(name);
-
-        JLabel code = new JLabel(item.code);
-        code.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 9));
-        code.setForeground(MUTED);
-        code.setAlignmentX(Component.CENTER_ALIGNMENT);
-        button.add(javax.swing.Box.createVerticalStrut(1));
-        button.add(code);
-        button.add(javax.swing.Box.createVerticalGlue());
-
-        button.addActionListener(new ActionListener() {
-            public void actionPerformed(ActionEvent event) {
-                Safe.guard("帶入結帳代碼", new Runnable() {
-                    public void run() {
-                        press(item);
-                    }
-                });
-            }
-        });
+        JButton button = key(item.name, item.code, item.pinned ? Tone.PINNED : Tone.PLAIN,
+            item.name + "（" + item.code + "）點一下帶入 POS，"
+            + (item.pinned ? "右鍵可取消釘選" : "右鍵可釘選到最上面"),
+            new Runnable() {
+                public void run() {
+                    press(item);
+                }
+            });
         button.addMouseListener(new MouseAdapter() {
             // 兩個事件都看：右鍵選單在 Windows 是放開時觸發，在 macOS 是按下時
             public void mousePressed(MouseEvent event) {
@@ -354,6 +346,133 @@ public final class CodePad extends JPanel {
             }
         });
         return button;
+    }
+
+    /** 代碼鍵的三種外觀：一般、釘選（藍）、關聯存貨提示（琥珀）。 */
+    private enum Tone { PLAIN, PINNED, RELATED }
+
+    /** 代碼鍵的外觀與點擊。 */
+    private JButton key(String label, String codeText, Tone tone, String tip,
+        final Runnable action) {
+        JButton button = new Key(tone);
+        button.setFocusable(false);
+        button.setLayout(new BoxLayout(button, BoxLayout.Y_AXIS));
+        // 內距靠 border 給，外框自己畫；不能用 L&F 的邊框，各家厚度差很多
+        button.setBorder(BorderFactory.createEmptyBorder(3, 2, 3, 2));
+        button.setMargin(new Insets(0, 0, 0, 0));
+        button.setPreferredSize(new Dimension(MIN_CELL, BUTTON_HEIGHT));
+        button.setToolTipText(tip);
+        button.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+
+        // 上下各留一段可伸縮的空白，剩餘高度平均分掉，文字才會落在格子正中間
+        button.add(javax.swing.Box.createVerticalGlue());
+
+        JLabel name = new JLabel(label);
+        name.setFont(name.getFont().deriveFont(Font.BOLD, 11f));
+        name.setForeground(tone == Tone.PINNED ? ACCENT
+            : tone == Tone.RELATED ? Style.HINT : Style.TEXT);
+        name.setAlignmentX(Component.CENTER_ALIGNMENT);
+        button.add(name);
+
+        JLabel code = new JLabel(codeText);
+        code.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 9));
+        code.setForeground(MUTED);
+        code.setAlignmentX(Component.CENTER_ALIGNMENT);
+        button.add(javax.swing.Box.createVerticalStrut(1));
+        button.add(code);
+        button.add(javax.swing.Box.createVerticalGlue());
+
+        button.addActionListener(new ActionListener() {
+            public void actionPerformed(ActionEvent event) {
+                Safe.guard("帶入結帳代碼", action);
+            }
+        });
+        return button;
+    }
+
+    // -- 關聯存貨（AppleCare）----------------------------------------------
+
+    /**
+     * 剛掃進 POS 的主機有關聯存貨時呼叫（EDT）。已經在明細裡的不再提示。
+     * 資料來自 EPB 的 STKMAS_RET，跟 POSN 自己跳「關聯存貨」訊息用的是同一份。
+     */
+    public void showRelated(String hostCode, String hostName, List<RelatedStock.Item> related,
+        java.util.Set<String> inCart) {
+        relatedGrid.removeAll();
+        relatedCodes.clear();
+        for (final RelatedStock.Item item : related) {
+            if (inCart != null && inCart.contains(item.code)) {
+                continue;
+            }
+            relatedCodes.add(item.code);
+            relatedGrid.add(key(shortName(item.name), item.code, Tone.RELATED,
+                item.name + "（" + item.code + "）點一下帶入 POS",
+                new Runnable() {
+                    public void run() {
+                        pressRelated(item);
+                    }
+                }));
+        }
+        if (relatedCodes.isEmpty()) {
+            hideRelated();
+            return;
+        }
+        relatedLabel.setText("關聯存貨 · " + hostCode);
+        relatedLabel.setToolTipText(hostName == null || hostName.length() == 0 ? null : hostName);
+        setRelatedVisible(true);
+    }
+
+    /** POS 明細變了（EDT）。關聯存貨已經加進去、或整張交易清空了，就收起來。 */
+    public void relatedLinesChanged(java.util.Set<String> inCart) {
+        if (relatedCodes.isEmpty()) {
+            return;
+        }
+        if (inCart == null || inCart.isEmpty()) {
+            hideRelated();
+            return;
+        }
+        for (String code : relatedCodes) {
+            if (inCart.contains(code)) {
+                hideRelated();
+                return;
+            }
+        }
+    }
+
+    public void hideRelated() {
+        relatedCodes.clear();
+        relatedGrid.removeAll();
+        setRelatedVisible(false);
+    }
+
+    private void setRelatedVisible(boolean visible) {
+        relatedLabel.setVisible(visible);
+        relatedGrid.setVisible(visible);
+        relatedGap.setVisible(visible);
+        relatedGrid.revalidate();
+        relatedGrid.repaint();
+    }
+
+    private void pressRelated(RelatedStock.Item item) {
+        if (applier == null) {
+            status.setText("這個畫面不支援帶入");
+            return;
+        }
+        status.setText(applier.applyCode(item.code)
+            ? "已帶入 " + item.name
+            : "POS 目前不接受帶入");
+    }
+
+    /**
+     * 格子只放得下五六個字。「代收保費- AppleCare+ for 13-inch MacBook Air (M5)」
+     * 全塞進去只會被切掉，AppleCare 就顯示 AppleCare+，全名留在 tooltip。
+     */
+    static String shortName(String name) {
+        String text = name == null ? "" : name.trim();
+        if (text.toLowerCase().indexOf("applecare") >= 0) {
+            return "AppleCare+";
+        }
+        return text.length() <= 6 ? text : text.substring(0, 6);
     }
 
     private void maybePopup(final MouseEvent event, final CodeItem item) {
@@ -520,10 +639,10 @@ public final class CodePad extends JPanel {
      * 觸控螢幕上「按下去有反應」比滑過重要。
      */
     private static final class Key extends JButton {
-        private final boolean pinned;
+        private final Tone tone;
 
-        Key(boolean pinned) {
-            this.pinned = pinned;
+        Key(Tone tone) {
+            this.tone = tone;
             setContentAreaFilled(false);
             setBorderPainted(false);
             setOpaque(false);
@@ -543,11 +662,13 @@ public final class CodePad extends JPanel {
             } else if (model.isRollover()) {
                 fill = Style.KEY_HOVER;
             } else {
-                fill = pinned ? Style.TAB_ON : Style.SURFACE;
+                fill = tone == Tone.PINNED ? Style.TAB_ON
+                    : tone == Tone.RELATED ? Style.HINT_BG : Style.SURFACE;
             }
             g2.setColor(fill);
             g2.fillRoundRect(0, 0, w - 1, h - 1, Style.RADIUS_KEY, Style.RADIUS_KEY);
-            g2.setColor(pinned ? Style.ACCENT : Style.LINE);
+            g2.setColor(tone == Tone.PINNED ? Style.ACCENT
+                : tone == Tone.RELATED ? Style.HINT : Style.LINE);
             g2.drawRoundRect(0, 0, w - 1, h - 1, Style.RADIUS_KEY, Style.RADIUS_KEY);
             g2.dispose();
             super.paintComponent(g);

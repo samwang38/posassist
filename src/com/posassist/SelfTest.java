@@ -216,6 +216,8 @@ public final class SelfTest {
             VipLookup.buildExactSql(1, 1, false).indexOf(VipLookup.REMARK_COLUMN) < 0);
         sqlPortable("精確查詢（無備註4）", VipLookup.buildExactSql(1, 1, false));
         sqlPortable("電話備援（無備註4）", VipLookup.buildFallbackSql(false));
+        sqlPortable("關聯存貨", RelatedStock.SQL);
+        bindCount("關聯存貨", RelatedStock.SQL, 3);
         bindCount("精確查詢（無備註4）", VipLookup.buildExactSql(1, 1, false), 4);
 
         System.out.println();

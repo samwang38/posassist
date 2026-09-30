@@ -33,6 +33,12 @@ final class Style {
     /** 代碼鍵滑過與按下的底色。觸控螢幕上按下的回饋比滑過重要。 */
     static final Color KEY_HOVER = new Color(0xF4, 0xF6, 0xF8);
     static final Color KEY_PRESS = new Color(0xDF, 0xE5, 0xEE);
+    /**
+     * 臨時提示（掃主機後的關聯存貨）。刻意跟釘選的藍色不同色：兩者都在代碼區最上面，
+     * 同色的話會被當成同一組釘選。
+     */
+    static final Color HINT = new Color(0xB4, 0x53, 0x09);
+    static final Color HINT_BG = new Color(0xFE, 0xF3, 0xC7);
     /** 出錯的訊息。 */
     static final Color DANGER = new Color(0x9B, 0x2C, 0x2C);
 

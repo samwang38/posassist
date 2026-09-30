@@ -1350,6 +1350,20 @@ public final class FloatingPanel {
         return button;
     }
 
+    // -- 關聯存貨（AppleCare）提示 -----------------------------------------
+
+    /** 剛掃進 POS 的主機有關聯存貨時呼叫（EDT）。提示放在結帳代碼區最上面，按法跟代碼鍵一樣。 */
+    public void showRelated(String hostCode, String hostName, List<RelatedStock.Item> items,
+        java.util.Set<String> inCart) {
+        codePad.showRelated(hostCode, hostName, items, inCart);
+        relayout();
+    }
+
+    /** POS 明細變了（EDT）。關聯存貨已經加進去、或交易清空了，就收起提示。 */
+    public void relatedLinesChanged(java.util.Set<String> inCart) {
+        codePad.relatedLinesChanged(inCart);
+    }
+
     /** phone 為 null 就收起來。 */
     private void offerCreate(String phone) {
         if (phone == null) {

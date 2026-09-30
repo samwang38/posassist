@@ -14,9 +14,13 @@ import java.util.Collection;
 import java.awt.KeyboardFocusManager;
 
 import javax.swing.JComponent;
+import javax.swing.JTable;
 import javax.swing.SwingUtilities;
 import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
+import javax.swing.event.TableModelEvent;
+import javax.swing.event.TableModelListener;
+import javax.swing.table.TableModel;
 import javax.swing.text.Document;
 
 /**
@@ -61,6 +65,11 @@ public final class PosnHook implements FloatingPanel.VipApplier, SidebarHost.Gua
      * 只擋「拆側欄」這個方向 —— 建立工作區是無害的，不需要等。
      */
     private static final int IDENTITY_CONFIRM_TICKS = 3;
+    /** POS 明細表變動後等多久才讀：POSN 加一個品項會連發好幾個表格事件，等它停手再看一次就好。 */
+    private static final int LINE_SCAN_DELAY_MS = 300;
+    private static final String LINE_TABLE = "posLineTable";
+    private static final String STOCK_COLUMN = "STOCK_ID";
+    private static final String NAME_COLUMN = "DESCRIPTION";
 
     private final String posInputField;
 
@@ -86,6 +95,16 @@ public final class PosnHook implements FloatingPanel.VipApplier, SidebarHost.Gua
     /** 正在確認的登入身分。null 代表目前讀到的跟掛著的一致，沒有待確認的變動。 */
     private String pendingIdentity;
     private int pendingIdentityTicks;
+
+    /** POS 明細表（posLineTable）的資料模型與我們掛上去的監聽，用來偵測剛掃進來的主機。 */
+    private JTable lineTable;
+    private TableModel watchedLines;
+    private TableModelListener lineWatcher;
+    private java.beans.PropertyChangeListener lineModelWatcher;
+    private javax.swing.Timer lineScanTimer;
+    /** 上一次看到的明細存貨代碼。新出現的才是「剛掃進來的」。 */
+    private java.util.Set<String> seenStockIds = new java.util.HashSet<String>();
+    private boolean warnedNoStockColumn;
     private final boolean inventoryEnabled = "true".equalsIgnoreCase(
         Home.value("config/posassist.properties", "enableInventory", "false"));
 
@@ -287,6 +306,7 @@ public final class PosnHook implements FloatingPanel.VipApplier, SidebarHost.Gua
                 }
                 panel.attachTo(attachedView, posNoOf(posnInstance));
                 bindVipField(posnInstance);
+                bindLineTable(posnInstance);
             }
         });
     }
@@ -382,6 +402,7 @@ public final class PosnHook implements FloatingPanel.VipApplier, SidebarHost.Gua
         attachedView = null;
         armedReservationRef = null;
         unbindVipField();
+        unbindLineTable();
     }
 
     private void disposePanel() {
@@ -636,6 +657,159 @@ public final class PosnHook implements FloatingPanel.VipApplier, SidebarHost.Gua
         } catch (Throwable t) {
             return false;
         }
+    }
+
+    // -- 關聯存貨（AppleCare）提示 -----------------------------------------
+
+    /**
+     * 監看 POS 明細表。只掛 listener、只讀格子，完全不動 POSN 的資料。
+     * listener 裡只重啟計時器 —— 它跑在 POSN 更新表格的同一個呼叫裡，不能做任何可能丟例外或變慢的事。
+     */
+    private void bindLineTable(Object posn) {
+        unbindLineTable();
+        Object table = posn == null ? null : Safe.field(posn, LINE_TABLE);
+        if (!(table instanceof JTable)) {
+            PosLog.info("找不到 POS 明細表，關聯存貨提示停用");
+            return;
+        }
+        lineTable = (JTable) table;
+        lineScanTimer = new javax.swing.Timer(LINE_SCAN_DELAY_MS,
+            e -> Safe.guard("讀 POS 明細", () -> scanLines()));
+        lineScanTimer.setRepeats(false);
+        lineWatcher = new TableModelListener() {
+            public void tableChanged(TableModelEvent event) {
+                javax.swing.Timer timer = lineScanTimer;
+                if (timer != null) {
+                    timer.restart();
+                }
+            }
+        };
+        // POSN 換新交易時可能整個換掉 model，換了就跟著換掛
+        lineModelWatcher = event -> Safe.guard("POS 明細換 model", () -> watchModel(lineTable.getModel()));
+        lineTable.addPropertyChangeListener("model", lineModelWatcher);
+        watchModel(lineTable.getModel());
+        // 接上當下已經在明細裡的品項不算「剛掃進來」，不提示
+        seenStockIds = currentStockIds(null);
+        PosLog.info("已接上 POS 明細表，關聯存貨提示啟用");
+    }
+
+    private void watchModel(TableModel model) {
+        if (watchedLines != null && lineWatcher != null) {
+            watchedLines.removeTableModelListener(lineWatcher);
+        }
+        watchedLines = model;
+        if (watchedLines != null && lineWatcher != null) {
+            watchedLines.addTableModelListener(lineWatcher);
+        }
+    }
+
+    private void unbindLineTable() {
+        if (lineScanTimer != null) {
+            lineScanTimer.stop();
+            lineScanTimer = null;
+        }
+        try {
+            if (watchedLines != null && lineWatcher != null) {
+                watchedLines.removeTableModelListener(lineWatcher);
+            }
+            if (lineTable != null && lineModelWatcher != null) {
+                lineTable.removePropertyChangeListener("model", lineModelWatcher);
+            }
+        } catch (Throwable ignored) {
+            // 卸不掉就算了，listener 只會重啟一個已停掉的計時器
+        }
+        watchedLines = null;
+        lineWatcher = null;
+        lineModelWatcher = null;
+        lineTable = null;
+        seenStockIds = new java.util.HashSet<String>();
+    }
+
+    /** 明細停止變動後跑一次：找出新出現的存貨代碼，查它的關聯存貨。 */
+    private void scanLines() {
+        if (panel == null || watchedLines == null) {
+            return;
+        }
+        java.util.Map<String, String> names = new java.util.LinkedHashMap<String, String>();
+        java.util.Set<String> now = currentStockIds(names);
+        String newest = null;
+        for (String id : now) {
+            if (!seenStockIds.contains(id)) {
+                newest = id;      // 依明細順序，最後一個新的就是最近掃的
+            }
+        }
+        seenStockIds = now;
+        panel.relatedLinesChanged(now);
+        if (newest == null) {
+            return;
+        }
+        final String host = newest;
+        final String hostName = names.get(host);
+        RelatedStock.lookupAsync(host, items -> {
+            if (panel == null || items.isEmpty()) {
+                return;
+            }
+            PosLog.info("主機 " + host + " 有 " + items.size() + " 筆關聯存貨，面板提示");
+            panel.showRelated(host, hostName, items, seenStockIds);
+        });
+    }
+
+    /** 讀明細表目前所有的存貨代碼（依列順序）。names 不為 null 時順便收品名。 */
+    private java.util.Set<String> currentStockIds(java.util.Map<String, String> names) {
+        java.util.Set<String> ids = new java.util.LinkedHashSet<String>();
+        TableModel model = watchedLines;
+        if (model == null) {
+            return ids;
+        }
+        int stock = columnOf(model, STOCK_COLUMN);
+        if (stock < 0) {
+            if (!warnedNoStockColumn) {
+                warnedNoStockColumn = true;
+                PosLog.warn("POS 明細表找不到 " + STOCK_COLUMN + " 欄，關聯存貨提示停用");
+            }
+            return ids;
+        }
+        int name = names == null ? -1 : columnOf(model, NAME_COLUMN);
+        for (int row = 0; row < model.getRowCount(); row++) {
+            Object value = model.getValueAt(row, stock);
+            String id = value == null ? "" : String.valueOf(value).trim();
+            if (id.length() == 0) {
+                continue;
+            }
+            ids.add(id);
+            if (name >= 0) {
+                Object label = model.getValueAt(row, name);
+                names.put(id, label == null ? "" : String.valueOf(label).trim());
+            }
+        }
+        return ids;
+    }
+
+    /**
+     * 欄位名稱在 EPB 的 EpbTableModel 裡是 SQL 的別名（STOCK_ID、DESCRIPTION）。
+     * 先問 TableModel 自己的欄名，對不上再照 POSN 的做法看 DataModel 的 ResultSetMetaData。
+     */
+    private static int columnOf(TableModel model, String column) {
+        for (int i = 0; i < model.getColumnCount(); i++) {
+            if (column.equalsIgnoreCase(String.valueOf(model.getColumnName(i)))) {
+                return i;
+            }
+        }
+        Object data = Safe.call(model, "getDataModel");
+        Object meta = data == null ? null : Safe.call(data, "getMetaData");
+        if (meta instanceof java.sql.ResultSetMetaData) {
+            try {
+                java.sql.ResultSetMetaData md = (java.sql.ResultSetMetaData) meta;
+                for (int i = 1; i <= md.getColumnCount() && i <= model.getColumnCount(); i++) {
+                    if (column.equalsIgnoreCase(md.getColumnLabel(i))) {
+                        return i - 1;
+                    }
+                }
+            } catch (Throwable ignored) {
+                // 讀不到欄名就當作沒有
+            }
+        }
+        return -1;
     }
 
     // -- 會員欄位跟隨 ------------------------------------------------------
