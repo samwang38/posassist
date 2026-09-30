@@ -83,6 +83,41 @@ final class RelatedStock {
         }));
     }
 
+    /** 診斷過的主機，同一次開機只查一次。 */
+    private static final java.util.Set<String> DIAGNOSED =
+        Collections.synchronizedSet(new java.util.HashSet<String>());
+
+    /**
+     * 查到 0 筆時的診斷：不加任何篩選再查一次，看是本機資料庫沒有這筆關聯，
+     * 還是被「有效狀態」或起訖日濾掉。只讀，結果寫進 log。
+     */
+    static void diagnoseAsync(final String stkId) {
+        if (!DIAGNOSED.add(stkId)) {
+            return;
+        }
+        WORKER.execute(() -> Safe.guard("診斷關聯存貨", () -> {
+            List<Object> params = new ArrayList<Object>();
+            params.add(stkId);
+            List<Vector> rows = VipLookup.query(
+                "SELECT r.STK_ID_RET, m.STATUS_FLG, r.START_DATE, r.END_DATE "
+                + "FROM STKMAS_RET r LEFT JOIN STKMAS m ON m.STK_ID = r.STK_ID_RET "
+                + "WHERE r.STK_ID = ?", params);
+            if (rows == null) {
+                PosLog.warn("診斷關聯存貨 " + stkId + "：查詢失敗（本機可能沒有 STKMAS_RET）");
+                return;
+            }
+            StringBuilder detail = new StringBuilder();
+            for (int i = 0; i < rows.size(); i++) {
+                Vector row = rows.get(i);
+                detail.append(i == 0 ? "" : "；").append(cell(row, 0)).append(" 狀態=")
+                    .append(cell(row, 1)).append(" 起=").append(cell(row, 2))
+                    .append(" 迄=").append(cell(row, 3));
+            }
+            PosLog.info("診斷關聯存貨 " + stkId + "：不篩選共 " + rows.size() + " 筆"
+                + (rows.isEmpty() ? "（本機資料庫沒有這台主機的關聯）" : "：" + detail));
+        }));
+    }
+
     /** 查詢失敗回 null（不快取，下次再試），查無關聯回空 list。 */
     static List<Item> lookup(String stkId) {
         List<Item> cached = CACHE.get(stkId);

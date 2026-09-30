@@ -105,6 +105,8 @@ public final class PosnHook implements FloatingPanel.VipApplier, SidebarHost.Gua
     /** 上一次看到的明細存貨代碼。新出現的才是「剛掃進來的」。 */
     private java.util.Set<String> seenStockIds = new java.util.HashSet<String>();
     private boolean warnedNoStockColumn;
+    /** 診斷用：上次讀明細之後，明細表發了幾次變動事件。 */
+    private int lineEvents;
     private final boolean inventoryEnabled = "true".equalsIgnoreCase(
         Home.value("config/posassist.properties", "enableInventory", "false"));
 
@@ -678,6 +680,7 @@ public final class PosnHook implements FloatingPanel.VipApplier, SidebarHost.Gua
         lineScanTimer.setRepeats(false);
         lineWatcher = new TableModelListener() {
             public void tableChanged(TableModelEvent event) {
+                lineEvents++;
                 javax.swing.Timer timer = lineScanTimer;
                 if (timer != null) {
                     timer.restart();
@@ -690,7 +693,7 @@ public final class PosnHook implements FloatingPanel.VipApplier, SidebarHost.Gua
         watchModel(lineTable.getModel());
         // 接上當下已經在明細裡的品項不算「剛掃進來」，不提示
         seenStockIds = currentStockIds(null);
-        PosLog.info("已接上 POS 明細表，關聯存貨提示啟用");
+        PosLog.info("已接上 POS 明細表，關聯存貨提示啟用（" + describeLines() + "）");
     }
 
     private void watchModel(TableModel model) {
@@ -738,6 +741,12 @@ public final class PosnHook implements FloatingPanel.VipApplier, SidebarHost.Gua
                 newest = id;      // 依明細順序，最後一個新的就是最近掃的
             }
         }
+        int events = lineEvents;
+        lineEvents = 0;
+        // 診斷：1.6.3 在門市刷主機沒反應、log 也一片空白，分不出是沒讀到還是查不到。
+        // 每次明細停下來記一行（一次交易就幾行），查清楚之後再降回只記有結果的
+        PosLog.info("POS 明細變動 " + events + " 次，" + watchedLines.getRowCount() + " 列，"
+            + "存貨代碼 " + now + (newest == null ? "，沒有新品項" : "，新品項 " + newest));
         seenStockIds = now;
         panel.relatedLinesChanged(now);
         if (newest == null) {
@@ -746,12 +755,30 @@ public final class PosnHook implements FloatingPanel.VipApplier, SidebarHost.Gua
         final String host = newest;
         final String hostName = names.get(host);
         RelatedStock.lookupAsync(host, items -> {
+            PosLog.info("關聯存貨查詢 " + host + " → " + items.size() + " 筆");
+            if (items.isEmpty()) {
+                RelatedStock.diagnoseAsync(host);
+            }
             if (panel == null || items.isEmpty()) {
                 return;
             }
             PosLog.info("主機 " + host + " 有 " + items.size() + " 筆關聯存貨，面板提示");
             panel.showRelated(host, hostName, items, seenStockIds);
         });
+    }
+
+    /** 診斷用：明細表的 model 類別、欄數、存貨代碼欄的位置。 */
+    private String describeLines() {
+        TableModel model = watchedLines;
+        if (model == null) {
+            return "model 為 null";
+        }
+        StringBuilder names = new StringBuilder();
+        for (int i = 0; i < model.getColumnCount() && i < 20; i++) {
+            names.append(i == 0 ? "" : ",").append(model.getColumnName(i));
+        }
+        return model.getClass().getName() + "，" + model.getColumnCount() + " 欄，"
+            + STOCK_COLUMN + " 在第 " + columnOf(model, STOCK_COLUMN) + " 欄，前 20 欄：" + names;
     }
 
     /** 讀明細表目前所有的存貨代碼（依列順序）。names 不為 null 時順便收品名。 */
