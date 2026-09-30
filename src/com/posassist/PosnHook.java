@@ -18,8 +18,6 @@ import javax.swing.JTable;
 import javax.swing.SwingUtilities;
 import javax.swing.event.DocumentEvent;
 import javax.swing.event.DocumentListener;
-import javax.swing.event.TableModelEvent;
-import javax.swing.event.TableModelListener;
 import javax.swing.table.TableModel;
 import javax.swing.text.Document;
 
@@ -65,8 +63,8 @@ public final class PosnHook implements FloatingPanel.VipApplier, SidebarHost.Gua
      * 只擋「拆側欄」這個方向 —— 建立工作區是無害的，不需要等。
      */
     private static final int IDENTITY_CONFIRM_TICKS = 3;
-    /** POS 明細表變動後等多久才讀：POSN 加一個品項會連發好幾個表格事件，等它停手再看一次就好。 */
-    private static final int LINE_SCAN_DELAY_MS = 300;
+    /** 多久讀一次 POS 明細表。POSN 更新明細不發表格事件，只能輪詢（見 bindLineTable）。 */
+    private static final int LINE_POLL_MS = 500;
     private static final String LINE_TABLE = "posLineTable";
     private static final String STOCK_COLUMN = "STOCK_ID";
     private static final String NAME_COLUMN = "DESCRIPTION";
@@ -96,17 +94,13 @@ public final class PosnHook implements FloatingPanel.VipApplier, SidebarHost.Gua
     private String pendingIdentity;
     private int pendingIdentityTicks;
 
-    /** POS 明細表（posLineTable）的資料模型與我們掛上去的監聽，用來偵測剛掃進來的主機。 */
+    /** POS 明細表（posLineTable），用來偵測剛掃進來的主機。 */
     private JTable lineTable;
-    private TableModel watchedLines;
-    private TableModelListener lineWatcher;
-    private java.beans.PropertyChangeListener lineModelWatcher;
     private javax.swing.Timer lineScanTimer;
     /** 上一次看到的明細存貨代碼。新出現的才是「剛掃進來的」。 */
     private java.util.Set<String> seenStockIds = new java.util.HashSet<String>();
     private boolean warnedNoStockColumn;
-    /** 診斷用：上次讀明細之後，明細表發了幾次變動事件。 */
-    private int lineEvents;
+    private boolean warnedLineScan;
     private final boolean inventoryEnabled = "true".equalsIgnoreCase(
         Home.value("config/posassist.properties", "enableInventory", "false"));
 
@@ -664,8 +658,12 @@ public final class PosnHook implements FloatingPanel.VipApplier, SidebarHost.Gua
     // -- 關聯存貨（AppleCare）提示 -----------------------------------------
 
     /**
-     * 監看 POS 明細表。只掛 listener、只讀格子，完全不動 POSN 的資料。
-     * listener 裡只重啟計時器 —— 它跑在 POSN 更新表格的同一個呼叫裡，不能做任何可能丟例外或變慢的事。
+     * 監看 POS 明細表：每 0.5 秒讀一次存貨代碼欄，跟上次比有沒有新品項。只讀，完全不動 POSN 的資料。
+     *
+     * 不用 TableModelListener：POSN 更新明細只走 EpbTableModel.restore()，而它直接呼叫
+     * JTable.tableChanged()，不經過 fireTableChanged，掛在 model 上的 listener 永遠收不到
+     * （1.6.3 在門市就是這樣：接上了，但刷主機一次通知都沒有）。明細通常只有幾列，
+     * 每 0.5 秒讀一次的成本可以忽略，而且不管 POSN 怎麼換 model、中途跳什麼對話框都讀得到。
      */
     private void bindLineTable(Object posn) {
         unbindLineTable();
@@ -675,35 +673,12 @@ public final class PosnHook implements FloatingPanel.VipApplier, SidebarHost.Gua
             return;
         }
         lineTable = (JTable) table;
-        lineScanTimer = new javax.swing.Timer(LINE_SCAN_DELAY_MS,
-            e -> Safe.guard("讀 POS 明細", () -> scanLines()));
-        lineScanTimer.setRepeats(false);
-        lineWatcher = new TableModelListener() {
-            public void tableChanged(TableModelEvent event) {
-                lineEvents++;
-                javax.swing.Timer timer = lineScanTimer;
-                if (timer != null) {
-                    timer.restart();
-                }
-            }
-        };
-        // POSN 換新交易時可能整個換掉 model，換了就跟著換掛
-        lineModelWatcher = event -> Safe.guard("POS 明細換 model", () -> watchModel(lineTable.getModel()));
-        lineTable.addPropertyChangeListener("model", lineModelWatcher);
-        watchModel(lineTable.getModel());
         // 接上當下已經在明細裡的品項不算「剛掃進來」，不提示
-        seenStockIds = currentStockIds(null);
+        seenStockIds = currentStockIds(lineTable.getModel(), null);
+        lineScanTimer = new javax.swing.Timer(LINE_POLL_MS, e -> pollLines());
+        lineScanTimer.setRepeats(true);
+        lineScanTimer.start();
         PosLog.info("已接上 POS 明細表，關聯存貨提示啟用（" + describeLines() + "）");
-    }
-
-    private void watchModel(TableModel model) {
-        if (watchedLines != null && lineWatcher != null) {
-            watchedLines.removeTableModelListener(lineWatcher);
-        }
-        watchedLines = model;
-        if (watchedLines != null && lineWatcher != null) {
-            watchedLines.addTableModelListener(lineWatcher);
-        }
     }
 
     private void unbindLineTable() {
@@ -711,42 +686,42 @@ public final class PosnHook implements FloatingPanel.VipApplier, SidebarHost.Gua
             lineScanTimer.stop();
             lineScanTimer = null;
         }
-        try {
-            if (watchedLines != null && lineWatcher != null) {
-                watchedLines.removeTableModelListener(lineWatcher);
-            }
-            if (lineTable != null && lineModelWatcher != null) {
-                lineTable.removePropertyChangeListener("model", lineModelWatcher);
-            }
-        } catch (Throwable ignored) {
-            // 卸不掉就算了，listener 只會重啟一個已停掉的計時器
-        }
-        watchedLines = null;
-        lineWatcher = null;
-        lineModelWatcher = null;
         lineTable = null;
         seenStockIds = new java.util.HashSet<String>();
     }
 
-    /** 明細停止變動後跑一次：找出新出現的存貨代碼，查它的關聯存貨。 */
+    /** 計時器每一拍都會跑，所以出錯只記一次，不然 POSN 某個狀態讀不到時每 0.5 秒洗一行 log。 */
+    private void pollLines() {
+        try {
+            scanLines();
+        } catch (Throwable t) {
+            if (!warnedLineScan) {
+                warnedLineScan = true;
+                PosLog.warn("讀 POS 明細失敗（之後不再重複記錄）", t);
+            }
+        }
+    }
+
+    /** 找出新出現的存貨代碼，查它的關聯存貨。明細沒變就什麼都不做。 */
     private void scanLines() {
-        if (panel == null || watchedLines == null) {
+        JTable table = lineTable;
+        if (panel == null || table == null) {
             return;
         }
         java.util.Map<String, String> names = new java.util.LinkedHashMap<String, String>();
-        java.util.Set<String> now = currentStockIds(names);
+        java.util.Set<String> now = currentStockIds(table.getModel(), names);
+        if (now.equals(seenStockIds)) {
+            return;
+        }
         String newest = null;
         for (String id : now) {
             if (!seenStockIds.contains(id)) {
                 newest = id;      // 依明細順序，最後一個新的就是最近掃的
             }
         }
-        int events = lineEvents;
-        lineEvents = 0;
-        // 診斷：1.6.3 在門市刷主機沒反應、log 也一片空白，分不出是沒讀到還是查不到。
-        // 每次明細停下來記一行（一次交易就幾行），查清楚之後再降回只記有結果的
-        PosLog.info("POS 明細變動 " + events + " 次，" + watchedLines.getRowCount() + " 列，"
-            + "存貨代碼 " + now + (newest == null ? "，沒有新品項" : "，新品項 " + newest));
+        // 診斷：確認在門市運作正常之後，再降回只記有結果的
+        PosLog.info("POS 明細 " + now.size() + " 種存貨 " + now
+            + (newest == null ? "，沒有新品項" : "，新品項 " + newest));
         seenStockIds = now;
         panel.relatedLinesChanged(now);
         if (newest == null) {
@@ -762,14 +737,13 @@ public final class PosnHook implements FloatingPanel.VipApplier, SidebarHost.Gua
             if (panel == null || items.isEmpty()) {
                 return;
             }
-            PosLog.info("主機 " + host + " 有 " + items.size() + " 筆關聯存貨，面板提示");
             panel.showRelated(host, hostName, items, seenStockIds);
         });
     }
 
     /** 診斷用：明細表的 model 類別、欄數、存貨代碼欄的位置。 */
     private String describeLines() {
-        TableModel model = watchedLines;
+        TableModel model = lineTable == null ? null : lineTable.getModel();
         if (model == null) {
             return "model 為 null";
         }
@@ -782,9 +756,9 @@ public final class PosnHook implements FloatingPanel.VipApplier, SidebarHost.Gua
     }
 
     /** 讀明細表目前所有的存貨代碼（依列順序）。names 不為 null 時順便收品名。 */
-    private java.util.Set<String> currentStockIds(java.util.Map<String, String> names) {
+    private java.util.Set<String> currentStockIds(TableModel model,
+        java.util.Map<String, String> names) {
         java.util.Set<String> ids = new java.util.LinkedHashSet<String>();
-        TableModel model = watchedLines;
         if (model == null) {
             return ids;
         }
