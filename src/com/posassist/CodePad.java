@@ -400,13 +400,17 @@ public final class CodePad extends JPanel {
         java.util.Set<String> inCart) {
         relatedGrid.removeAll();
         relatedCodes.clear();
+        boolean inferred = false;
         for (final RelatedStock.Item item : related) {
             if (inCart != null && inCart.contains(item.code)) {
                 continue;
             }
             relatedCodes.add(item.code);
+            inferred |= item.inferred();
             relatedGrid.add(key(shortName(item.name), item.code, Tone.RELATED,
-                item.name + "（" + item.code + "）點一下帶入 POS",
+                item.name + "（" + item.code + "）"
+                    + (item.inferred() ? "；公司端沒設定，" + item.inferredFrom
+                        + "推測；點了會先確認" : "點一下帶入 POS"),
                 new Runnable() {
                     public void run() {
                         pressRelated(item);
@@ -417,7 +421,8 @@ public final class CodePad extends JPanel {
             hideRelated();
             return;
         }
-        relatedLabel.setText("關聯存貨 · " + hostCode);
+        // 推測的整段標出來：公司沒設、是工具自己推的，店員要知道多看一眼
+        relatedLabel.setText("關聯存貨 · " + hostCode + (inferred ? "（依同型號推測）" : ""));
         relatedLabel.setToolTipText(hostName == null || hostName.length() == 0 ? null : hostName);
         setRelatedVisible(true);
     }
@@ -457,6 +462,19 @@ public final class CodePad extends JPanel {
         if (applier == null) {
             status.setText("這個畫面不支援帶入");
             return;
+        }
+        if (item.inferred()) {
+            int answer = javax.swing.JOptionPane.showConfirmDialog(
+                javax.swing.SwingUtilities.getWindowAncestor(this),
+                "公司端沒有設定這台主機的關聯存貨。\n"
+                    + "依" + item.inferredFrom + "，推測為：\n\n"
+                    + item.name + "（" + item.code + "）\n\n確定帶入 POS？",
+                "推測的關聯存貨", javax.swing.JOptionPane.YES_NO_OPTION,
+                javax.swing.JOptionPane.QUESTION_MESSAGE);
+            if (answer != javax.swing.JOptionPane.YES_OPTION) {
+                status.setText("沒有帶入");
+                return;
+            }
         }
         status.setText(applier.applyCode(item.code)
             ? "已帶入 " + item.name

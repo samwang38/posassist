@@ -730,7 +730,9 @@ public final class PosnHook implements FloatingPanel.VipApplier, SidebarHost.Gua
         final String host = newest;
         final String hostName = names.get(host);
         RelatedStock.lookupAsync(host, items -> {
-            PosLog.info("關聯存貨查詢 " + host + " → " + items.size() + " 筆");
+            PosLog.info("關聯存貨查詢 " + host + " → " + items.size() + " 筆"
+                + (!items.isEmpty() && items.get(0).inferred()
+                    ? "（" + items.get(0).inferredFrom + "推測）" : ""));
             if (items.isEmpty()) {
                 RelatedStock.diagnoseAsync(host);
             }

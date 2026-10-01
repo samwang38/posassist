@@ -25,10 +25,24 @@ final class RelatedStock {
     static final class Item {
         final String code;
         final String name;
+        /**
+         * 公司端沒設、由同型號推出來的才有值，內容是給人看的依據（型號與參照的主機）。
+         * 推測的關聯點下去要先確認，不能跟公司設定的一樣直接帶入。
+         */
+        final String inferredFrom;
 
         Item(String code, String name) {
+            this(code, name, null);
+        }
+
+        Item(String code, String name, String inferredFrom) {
             this.code = code;
             this.name = name;
+            this.inferredFrom = inferredFrom;
+        }
+
+        boolean inferred() {
+            return inferredFrom != null;
         }
     }
 
@@ -49,6 +63,27 @@ final class RelatedStock {
         + "AND (r.START_DATE IS NULL OR r.START_DATE < ?) "
         + "AND (r.END_DATE IS NULL OR r.END_DATE >= ?) "
         + "ORDER BY r.STK_ID_RET";
+
+    /**
+     * 公司端沒設關聯時的推論：同一個 Apple 型號（STKMAS.MODEL，例如 MFYM4ZP/A）的其他主機
+     * 設了哪個 AppleCare，就推測是那個。同型號就是同一台機器，AppleCare 一定相同 ——
+     * 常見的是同一台機器有 0731 與 905 兩組存貨代碼，只有一組設了關聯。
+     *
+     * 排除 265S 系列（名稱跟 2650 一模一樣，但 2026-08～09 全台一筆都沒賣過）與「維修專用」版。
+     * 排除後只剩唯一一個才採用（由呼叫端判斷），有兩個以上就不猜。
+     * 2026-10-01 用近 60 天正式銷售核對：公司沒設關聯、實際有賣 AppleCare 的 168 筆，
+     * 可推 158 筆，其中 152 筆與實際賣出的一致；不一致的看過有店員選錯的。
+     */
+    static final String INFER_SQL =
+        "SELECT h.MODEL, r.STK_ID_RET, c.NAME, MIN(s.STK_ID) FROM STKMAS h "
+        + "JOIN STKMAS s ON s.MODEL = h.MODEL AND s.STK_ID <> h.STK_ID "
+        + "JOIN STKMAS_RET r ON r.STK_ID = s.STK_ID "
+        + "JOIN STKMAS c ON c.STK_ID = r.STK_ID_RET "
+        + "WHERE h.STK_ID = ? AND h.MODEL IS NOT NULL AND c.STATUS_FLG = 'A' "
+        + "AND r.STK_ID_RET NOT LIKE ? AND c.NAME NOT LIKE ? "
+        + "AND (r.START_DATE IS NULL OR r.START_DATE < ?) "
+        + "AND (r.END_DATE IS NULL OR r.END_DATE >= ?) "
+        + "GROUP BY h.MODEL, r.STK_ID_RET, c.NAME ORDER BY r.STK_ID_RET";
 
     private static final int MAX_ROWS = 10;
     private static final int CACHE_SIZE = 300;
@@ -124,18 +159,26 @@ final class RelatedStock {
         if (cached != null) {
             return cached;
         }
-        java.util.Calendar day = java.util.Calendar.getInstance();
-        day.set(java.util.Calendar.HOUR_OF_DAY, 0);
-        day.set(java.util.Calendar.MINUTE, 0);
-        day.set(java.util.Calendar.SECOND, 0);
-        day.set(java.util.Calendar.MILLISECOND, 0);
-        java.sql.Timestamp today = new java.sql.Timestamp(day.getTimeInMillis());
-        day.add(java.util.Calendar.DAY_OF_MONTH, 1);
-        java.sql.Timestamp tomorrow = new java.sql.Timestamp(day.getTimeInMillis());
+        List<Item> configured = configured(stkId);
+        if (configured == null) {
+            return null;
+        }
+        List<Item> items = configured.isEmpty() ? infer(stkId) : configured;
+        if (items == null) {
+            return null;
+        }
+        List<Item> frozen = Collections.unmodifiableList(items);
+        CACHE.put(stkId, frozen);
+        return frozen;
+    }
+
+    /** 公司端在 STKMAS_RET 設好的關聯。查詢失敗回 null。 */
+    private static List<Item> configured(String stkId) {
+        java.sql.Timestamp[] days = todayAndTomorrow();
         List<Object> params = new ArrayList<Object>();
         params.add(stkId);
-        params.add(tomorrow);
-        params.add(today);
+        params.add(days[1]);
+        params.add(days[0]);
         List<Vector> rows = VipLookup.query(SQL, params);
         if (rows == null) {
             PosLog.warn("查關聯存貨失敗：" + stkId);
@@ -149,9 +192,46 @@ final class RelatedStock {
                 items.add(new Item(code, cell(row, 1)));
             }
         }
-        List<Item> frozen = Collections.unmodifiableList(items);
-        CACHE.put(stkId, frozen);
-        return frozen;
+        return items;
+    }
+
+    /** 依同型號推論（見 INFER_SQL）。不只一個候選就不猜，回空 list；查詢失敗回 null。 */
+    private static List<Item> infer(String stkId) {
+        java.sql.Timestamp[] days = todayAndTomorrow();
+        List<Object> params = new ArrayList<Object>();
+        params.add(stkId);
+        params.add("265S%");
+        params.add("%維修專用%");
+        params.add(days[1]);
+        params.add(days[0]);
+        List<Vector> rows = VipLookup.query(INFER_SQL, params);
+        if (rows == null) {
+            PosLog.warn("依同型號推論關聯存貨失敗：" + stkId);
+            return null;
+        }
+        List<Item> items = new ArrayList<Item>();
+        if (rows.size() == 1) {
+            Vector row = rows.get(0);
+            String code = cell(row, 1);
+            if (code.length() != 0) {
+                items.add(new Item(code, cell(row, 2),
+                    "同型號 " + cell(row, 0) + "（參照 " + cell(row, 3) + " 的設定）"));
+            }
+        } else if (rows.size() > 1) {
+            PosLog.info("主機 " + stkId + " 依同型號有 " + rows.size() + " 個候選，不推論");
+        }
+        return items;
+    }
+
+    private static java.sql.Timestamp[] todayAndTomorrow() {
+        java.util.Calendar day = java.util.Calendar.getInstance();
+        day.set(java.util.Calendar.HOUR_OF_DAY, 0);
+        day.set(java.util.Calendar.MINUTE, 0);
+        day.set(java.util.Calendar.SECOND, 0);
+        day.set(java.util.Calendar.MILLISECOND, 0);
+        java.sql.Timestamp today = new java.sql.Timestamp(day.getTimeInMillis());
+        day.add(java.util.Calendar.DAY_OF_MONTH, 1);
+        return new java.sql.Timestamp[] { today, new java.sql.Timestamp(day.getTimeInMillis()) };
     }
 
     private static String cell(Vector row, int index) {
