@@ -139,6 +139,12 @@ public final class FloatingPanel {
     private Point lastPlaced;
     private boolean userMoved;
     private VipApplier applier;
+    /** 重開單據用的 POS 操作；沒開這個功能或還沒接上 POSN 時是 null。 */
+    private ReorderRunner.Host reorderHost;
+    /** 第一次按「重開單據」才建。顯示時暫時佔掉結帳代碼的位置。 */
+    private ReorderPane reorderPane;
+    private final boolean reorderEnabled = "true".equalsIgnoreCase(
+        Home.value(PANEL_PATH, "enableReorder", "false"));
 
     /**
      * 會員查詢的單飛佇列。同一時間只有一次查詢，舊結果自動丟棄。
@@ -205,6 +211,10 @@ public final class FloatingPanel {
 
     public void setVipApplier(VipApplier applier) {
         this.applier = applier;
+    }
+
+    public void setReorderHost(ReorderRunner.Host host) {
+        this.reorderHost = host;
     }
 
     // -- 版面 --------------------------------------------------------------
@@ -391,7 +401,16 @@ public final class FloatingPanel {
         JLabel heading = new JLabel("會員查詢");
         heading.setForeground(ACCENT);
         heading.setFont(heading.getFont().deriveFont(Font.BOLD, 13f));
-        area.add(heading, BorderLayout.NORTH);
+        if (reorderEnabled) {
+            // 平常只有這顆小按鈕；按了才查單據，輸入會員不會自動帶出任何東西
+            JPanel headingRow = new JPanel(new BorderLayout());
+            headingRow.setOpaque(false);
+            headingRow.add(heading, BorderLayout.WEST);
+            headingRow.add(reorderLink(), BorderLayout.EAST);
+            area.add(headingRow, BorderLayout.NORTH);
+        } else {
+            area.add(heading, BorderLayout.NORTH);
+        }
 
         searchField.setToolTipText("輸入電話或會員代碼後按 Enter 查詢。Esc 清空並把焦點還給 POS");
         searchField.setFont(searchField.getFont().deriveFont(13f));
@@ -875,6 +894,76 @@ public final class FloatingPanel {
     }
 
     /** 設定入口。做成連結的樣子，跟結帳代碼那個「編輯」同一個語彙。 */
+    private JButton reorderLink() {
+        JButton button = new JButton("重開單據");
+        button.setFont(Style.caption(button.getFont()));
+        button.setForeground(ACCENT);
+        button.setBorderPainted(false);
+        button.setContentAreaFilled(false);
+        button.setFocusPainted(false);
+        button.setFocusable(false);
+        button.setMargin(new Insets(0, 0, 0, 0));
+        button.setBorder(BorderFactory.createEmptyBorder());
+        button.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
+        button.setToolTipText("找一張已結帳的單，勾選或改代碼後依序帶回 POS");
+        button.addActionListener(new ActionListener() {
+            public void actionPerformed(ActionEvent event) {
+                Safe.guard("開啟重開單據", new Runnable() {
+                    public void run() {
+                        openReorder();
+                    }
+                });
+            }
+        });
+        return button;
+    }
+
+    /** 把結帳代碼區換成重開單據畫面。已經開著就重新整理清單。 */
+    private void openReorder() {
+        if (reorderHost == null) {
+            status.setText("POS 還沒接上，暫時不能重開單據");
+            return;
+        }
+        if (reorderPane == null) {
+            reorderPane = new ReorderPane(reorderHost, new Runnable() {
+                public void run() {
+                    closeReorder();
+                }
+            });
+        }
+        if (reorderPane.getParent() == null) {
+            swapLower(codePad, reorderPane);
+        }
+        reorderPane.open();
+    }
+
+    private void closeReorder() {
+        if (reorderPane != null && reorderPane.getParent() != null) {
+            swapLower(reorderPane, codePad);
+        }
+        returnFocus();
+    }
+
+    /** 換掉下半部（嵌入是分隔線下方，浮動是 CENTER），分隔線位置不動。 */
+    private void swapLower(Component out, Component in) {
+        java.awt.Container parent = out.getParent();
+        if (parent == null) {
+            return;
+        }
+        if (parent == verticalSplit) {
+            int divider = verticalSplit.getDividerLocation();
+            in.setMinimumSize(new Dimension(0, 0));
+            verticalSplit.setBottomComponent(in);
+            verticalSplit.setDividerLocation(divider);
+        } else {
+            in.setPreferredSize(out.getSize());
+            parent.remove(out);
+            parent.add(in, BorderLayout.CENTER);
+        }
+        parent.revalidate();
+        parent.repaint();
+    }
+
     private JButton settingsLink() {
         JButton button = new JButton("設定");
         button.setFont(Style.tiny(button.getFont()));

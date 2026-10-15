@@ -35,7 +35,8 @@ import javax.swing.text.Document;
  * 目標 app code 用 -Dposassist.appCode 覆寫。本機沒有 POSN 權限時，
  * 可以指定 SHOPPOSB 之類已授權的 app 來驗證整套機制。
  */
-public final class PosnHook implements FloatingPanel.VipApplier, SidebarHost.Guard {
+public final class PosnHook implements FloatingPanel.VipApplier, SidebarHost.Guard,
+    ReorderRunner.Host {
 
     private static final String POOL = "com.epb.framework.ApplicationPool";
     private static final String LISTENER = "com.epb.framework.ApplicationPoolListener";
@@ -68,6 +69,8 @@ public final class PosnHook implements FloatingPanel.VipApplier, SidebarHost.Gua
     private static final String LINE_TABLE = "posLineTable";
     private static final String STOCK_COLUMN = "STOCK_ID";
     private static final String NAME_COLUMN = "DESCRIPTION";
+    private static final String LINE_NO_COLUMN = "ID";
+    private static final String QTY_COLUMN = "STK_QTY";
 
     private final String posInputField;
 
@@ -101,6 +104,12 @@ public final class PosnHook implements FloatingPanel.VipApplier, SidebarHost.Gua
     private java.util.Set<String> seenStockIds = new java.util.HashSet<String>();
     private boolean warnedNoStockColumn;
     private boolean warnedLineScan;
+    /**
+     * 重開單據帶回 POS 的列，key 是 POS 明細的行號（ID 欄）。
+     * 店員對那一列按 F10 時，把原單的序號與 REF 填進序號視窗。交易清空就丟掉。
+     */
+    private final java.util.Map<String, Reorder.Line> pendingF10 =
+        new java.util.LinkedHashMap<String, Reorder.Line>();
     private final boolean inventoryEnabled = "true".equalsIgnoreCase(
         Home.value("config/posassist.properties", "enableInventory", "false"));
 
@@ -319,12 +328,14 @@ public final class PosnHook implements FloatingPanel.VipApplier, SidebarHost.Gua
                 panel = embedded;
                 sidebar = host;
                 panel.setVipApplier(this);
+                panel.setReorderHost(this);
                 return;
             }
             PosLog.warn("嵌入側欄未成功，改用浮動視窗");
         }
         panel = new FloatingPanel(shellWindow());
         panel.setVipApplier(this);
+        panel.setReorderHost(this);
     }
 
     private static boolean embeddedMode() {
@@ -397,6 +408,7 @@ public final class PosnHook implements FloatingPanel.VipApplier, SidebarHost.Gua
         posnInstance = null;
         attachedView = null;
         armedReservationRef = null;
+        pendingF10.clear();
         unbindVipField();
         unbindLineTable();
     }
@@ -519,11 +531,16 @@ public final class PosnHook implements FloatingPanel.VipApplier, SidebarHost.Gua
     }
 
     private void fillSerialDialog(Window window) {
-        String pending = armedReservationRef;
-        if (pending == null || window == null) {
+        if (window == null || !SERIAL_DIALOG.equals(window.getClass().getName())) {
             return;
         }
-        if (!SERIAL_DIALOG.equals(window.getClass().getName())) {
+        fillReservationRef(window);
+        fillReorderValues(window);
+    }
+
+    private void fillReservationRef(Window window) {
+        String pending = armedReservationRef;
+        if (pending == null) {
             return;
         }
 
@@ -655,6 +672,124 @@ public final class PosnHook implements FloatingPanel.VipApplier, SidebarHost.Gua
         }
     }
 
+    /**
+     * 重開單據：店員對帶回來的那一列按 F10，把原單的序號與 REF1–8 填進去。
+     * 用序號視窗的行號欄對回是哪一列，對不到才退回用 PLU 找。已經有值的欄位一律不覆蓋。
+     */
+    private void fillReorderValues(Window window) {
+        if (pendingF10.isEmpty()) {
+            return;
+        }
+        String lineNo = Reorder.lineNo(Safe.text(Safe.field(window, "lineNoTextField")));
+        Reorder.Line line = pendingF10.remove(lineNo);
+        if (line == null) {
+            String plu = Safe.text(Safe.field(window, "pluIdTextField"));
+            java.util.Iterator<java.util.Map.Entry<String, Reorder.Line>> it =
+                pendingF10.entrySet().iterator();
+            while (it.hasNext()) {
+                Reorder.Line candidate = it.next().getValue();
+                if (plu.length() != 0 && plu.equals(candidate.code.trim())) {
+                    line = candidate;
+                    it.remove();
+                    break;
+                }
+            }
+        }
+        if (line == null) {
+            return;
+        }
+        int filled = 0;
+        if (fillIfEmpty(Safe.field(window, "serialNoTextField"), line.serial)) {
+            filled++;
+        }
+        for (int i = 1; i <= Reorder.Line.REF_COUNT; i++) {
+            if (fillIfEmpty(Safe.field(window, "lineRef" + i + "TextField"), line.refs[i - 1])) {
+                filled++;
+            }
+        }
+        PosLog.info("重開單據 已填入序號視窗 " + filled + " 欄（行號 " + lineNo
+            + "，還有 " + pendingF10.size() + " 列待填）");
+    }
+
+    private static boolean fillIfEmpty(Object field, String value) {
+        if (field == null || value == null || value.length() == 0) {
+            return false;
+        }
+        if (Safe.text(field).length() != 0) {
+            return false;
+        }
+        Object enabled = Safe.call(field, "isEnabled");
+        Object editable = Safe.call(field, "isEditable");
+        if (Boolean.FALSE.equals(enabled) || Boolean.FALSE.equals(editable)) {
+            return false;
+        }
+        Safe.call(field, "setText", new Class<?>[] { String.class }, new Object[] { value });
+        return true;
+    }
+
+    // -- 重開單據（ReorderRunner.Host）-------------------------------------
+
+    public String vipId() {
+        return posnInstance == null ? "" : Safe.text(Safe.field(posnInstance, "vipIdTextField"));
+    }
+
+    public String posNo() {
+        return posNoOf(posnInstance);
+    }
+
+    public boolean applyVip(String vipId) {
+        return apply(vipId);
+    }
+
+    public String lineSignature() {
+        TableModel model = lineTable == null ? null : lineTable.getModel();
+        if (model == null) {
+            return null;
+        }
+        int qty = columnOf(model, QTY_COLUMN);
+        java.math.BigDecimal total = java.math.BigDecimal.ZERO;
+        for (int row = 0; qty >= 0 && row < model.getRowCount(); row++) {
+            Object value = model.getValueAt(row, qty);
+            try {
+                if (value != null) {
+                    total = total.add(new java.math.BigDecimal(String.valueOf(value).trim()));
+                }
+            } catch (NumberFormatException ignored) {
+                // 讀不懂的數量就不算，列數仍然看得出變化
+            }
+        }
+        return model.getRowCount() + "/" + total.stripTrailingZeros().toPlainString();
+    }
+
+    public int lineCount() {
+        TableModel model = lineTable == null ? null : lineTable.getModel();
+        return model == null ? -1 : model.getRowCount();
+    }
+
+    public String lastLineNo() {
+        TableModel model = lineTable == null ? null : lineTable.getModel();
+        if (model == null || model.getRowCount() == 0) {
+            return "";
+        }
+        int column = columnOf(model, LINE_NO_COLUMN);
+        return column < 0 ? "" : Reorder.lineNo(model.getValueAt(model.getRowCount() - 1, column));
+    }
+
+    public boolean modalOpen() {
+        for (Window window : Window.getWindows()) {
+            if (window instanceof java.awt.Dialog && window.isShowing()
+                && ((java.awt.Dialog) window).isModal()) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    public void expectF10(String posLineNo, Reorder.Line line) {
+        pendingF10.put(posLineNo, line);
+        installSerialWatcher();
+    }
+
     // -- 關聯存貨（AppleCare）提示 -----------------------------------------
 
     /**
@@ -723,6 +858,10 @@ public final class PosnHook implements FloatingPanel.VipApplier, SidebarHost.Gua
         PosLog.info("POS 明細 " + now.size() + " 種存貨 " + now
             + (newest == null ? "，沒有新品項" : "，新品項 " + newest));
         seenStockIds = now;
+        if (now.isEmpty() && !pendingF10.isEmpty()) {
+            PosLog.info("POS 明細已清空，丟掉 " + pendingF10.size() + " 列待填 F10");
+            pendingF10.clear();
+        }
         panel.relatedLinesChanged(now);
         if (newest == null) {
             return;

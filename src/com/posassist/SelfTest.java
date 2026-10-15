@@ -93,6 +93,13 @@ public final class SelfTest {
         clazz("com.ipt.app.posn.ui.PosSerialNoDialog");
         publicField("com.ipt.app.posn.ui.PosSerialNoDialog", "lineRef7Label");
         publicField("com.ipt.app.posn.ui.PosSerialNoDialog", "lineRef7TextField");
+        // 重開單據：帶回的列要用行號對回 F10 視窗，再填序號與 REF1–8
+        publicField("com.ipt.app.posn.ui.POSN", "posLineTable");
+        publicField("com.ipt.app.posn.ui.PosSerialNoDialog", "lineNoTextField");
+        publicField("com.ipt.app.posn.ui.PosSerialNoDialog", "pluIdTextField");
+        publicField("com.ipt.app.posn.ui.PosSerialNoDialog", "serialNoTextField");
+        publicField("com.ipt.app.posn.ui.PosSerialNoDialog", "lineRef1TextField");
+        publicField("com.ipt.app.posn.ui.PosSerialNoDialog", "lineRef8TextField");
 
         System.out.println();
         System.out.println("[5] 側欄嵌入");
@@ -202,6 +209,14 @@ public final class SelfTest {
         sqlPortable("電話備援", VipLookup.buildFallbackSql());
         bindCount("精確查詢", VipLookup.buildExactSql(1, 1), 4);
         bindCount("電話備援", VipLookup.buildFallbackSql(), 3);
+        sqlPortable("重開單據 會員", Reorder.SQL_BY_VIP);
+        sqlPortable("重開單據 本機", Reorder.SQL_BY_POS);
+        sqlPortable("重開單據 單號", Reorder.SQL_BY_NUMBER);
+        sqlPortable("重開單據 明細", Reorder.LINE_SQL);
+        bindCount("重開單據 會員", Reorder.SQL_BY_VIP, 2);
+        bindCount("重開單據 本機", Reorder.SQL_BY_POS, 2);
+        bindCount("重開單據 單號", Reorder.SQL_BY_NUMBER, 2);
+        bindCount("重開單據 明細", Reorder.LINE_SQL, 1);
         // 備註4（LINE 會員）：帶與不帶兩種 SQL 都要能用，欄位不存在時才降得下去
         // 慢查詢診斷用的 SQL 也要兩邊都能跑，而且不能把原句改壞
         sqlPortable("診斷 會員數", "SELECT COUNT(*) FROM POS_VIP_MAS");
