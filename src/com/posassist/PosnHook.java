@@ -48,6 +48,11 @@ public final class PosnHook implements FloatingPanel.VipApplier, SidebarHost.Gua
 
     /** F10 序號視窗。它是 modal，開著時面板點不動，所以只能先記住再自動填。 */
     private static final String SERIAL_DIALOG = "com.ipt.app.posn.ui.PosSerialNoDialog";
+    /**
+     * 加主機時 POSN 在加入前跳的輸入視窗（EpbPosPluUtls.addPlu）。同一個類別還用在
+     * 禮券（type D）、IUP（type C）；type B、標題「Key in unicode」才是序號。
+     */
+    private static final String KEYIN_DIALOG = "com.ipt.app.posn.ui.PosKeyinDialog";
     /** 對話框裡「預約單號」那一欄的標籤文字，用來認出是第幾個 lineRef。 */
     private static final String RESERVATION_LABEL = "預約單號";
     private static final int MAX_LINE_REF = 8;
@@ -110,6 +115,8 @@ public final class PosnHook implements FloatingPanel.VipApplier, SidebarHost.Gua
      */
     private final java.util.Map<String, Reorder.Line> pendingF10 =
         new java.util.LinkedHashMap<String, Reorder.Line>();
+    /** 重開單據正在帶的這一件要用的序號；序號視窗一開就填進去（不按確定）。 */
+    private String armedSerial;
     private final boolean inventoryEnabled = "true".equalsIgnoreCase(
         Home.value("config/posassist.properties", "enableInventory", "false"));
 
@@ -408,6 +415,7 @@ public final class PosnHook implements FloatingPanel.VipApplier, SidebarHost.Gua
         posnInstance = null;
         attachedView = null;
         armedReservationRef = null;
+        armedSerial = null;
         pendingF10.clear();
         unbindVipField();
         unbindLineTable();
@@ -531,11 +539,52 @@ public final class PosnHook implements FloatingPanel.VipApplier, SidebarHost.Gua
     }
 
     private void fillSerialDialog(Window window) {
-        if (window == null || !SERIAL_DIALOG.equals(window.getClass().getName())) {
+        if (window == null) {
+            return;
+        }
+        String type = window.getClass().getName();
+        if (KEYIN_DIALOG.equals(type)) {
+            fillKeyinSerial(window);
+            return;
+        }
+        if (!SERIAL_DIALOG.equals(type)) {
             return;
         }
         fillReservationRef(window);
         fillReorderValues(window);
+    }
+
+    /**
+     * 重開單據帶主機時，把原單序號填進「Key in unicode」。只填不按確定：
+     * 店員看一眼按 Enter，序號狀態（已銷售、不在本店）由 POSN 自己檢查。
+     */
+    private void fillKeyinSerial(Window window) {
+        String serial = armedSerial;
+        if (serial == null || !isSerialKeyin(window)) {
+            return;
+        }
+        Object field = Safe.field(window, "keyField");
+        if (field == null || Safe.text(field).length() != 0) {
+            return;
+        }
+        Safe.call(field, "setText", new Class<?>[] { String.class }, new Object[] { serial });
+        Safe.call(field, "requestFocusInWindow");
+        PosLog.info("重開單據 已把原單序號填進序號視窗，等店員確認");
+    }
+
+    private static boolean isSerialKeyin(Window window) {
+        try {
+            Field type = window.getClass().getDeclaredField("type");
+            type.setAccessible(true);
+            Object value = type.get(window);
+            if (value != null) {
+                return "B".equals(String.valueOf(value));
+            }
+        } catch (Throwable ignored) {
+            // 讀不到私有欄位就看標題
+        }
+        return window instanceof java.awt.Dialog
+            && String.valueOf(((java.awt.Dialog) window).getTitle()).toLowerCase().indexOf("unicode") >= 0;
     }
 
     private void fillReservationRef(Window window) {
@@ -699,9 +748,6 @@ public final class PosnHook implements FloatingPanel.VipApplier, SidebarHost.Gua
             return;
         }
         int filled = 0;
-        if (fillIfEmpty(Safe.field(window, "serialNoTextField"), line.serial)) {
-            filled++;
-        }
         for (int i = 1; i <= Reorder.Line.REF_COUNT; i++) {
             if (fillIfEmpty(Safe.field(window, "lineRef" + i + "TextField"), line.refs[i - 1])) {
                 filled++;
@@ -733,12 +779,98 @@ public final class PosnHook implements FloatingPanel.VipApplier, SidebarHost.Gua
         return posnInstance == null ? "" : Safe.text(Safe.field(posnInstance, "vipIdTextField"));
     }
 
+    public boolean vipLoaded() {
+        return posnInstance != null
+            && Safe.text(Safe.field(posnInstance, "vipNameTextField")).length() != 0;
+    }
+
     public String posNo() {
         return posNoOf(posnInstance);
     }
 
+    /**
+     * 跟會員卡上「帶入會員」不同：店員那時接著會自己點別的地方，焦點自然離開會員欄；
+     * 帶入器緊接著要帶商品，所以要主動把焦點移到 PLU 欄，POSN 才會驗證並載入會員。
+     */
     public boolean applyVip(String vipId) {
-        return apply(vipId);
+        if (!apply(vipId)) {
+            return false;
+        }
+        Object plu = Safe.field(posnInstance, posInputField);
+        if (plu != null) {
+            Safe.call(plu, "requestFocusInWindow");
+        }
+        if (panel != null) {
+            panel.showMember(vipId.trim());
+        }
+        return true;
+    }
+
+    /**
+     * 填 PLU 欄並「按 Enter」。POSN 加商品是 PLU 欄的 keyPressed（POSN$5），
+     * postActionEvent 對條碼沒有作用（2026-10-16 實機：13 碼條碼填了不會加）。
+     *
+     * 直接把按鍵事件交給 PLU 欄自己的 KeyListener，而不是丟進事件佇列：
+     * 佇列裡的按鍵會被轉給當下的焦點元件，焦點若還在面板上，Enter 就按錯地方了。
+     * 用 invokeLater 讓帶入器先回來 —— 主機的序號視窗是 modal，會在這裡面開著等店員。
+     */
+    public boolean submitCode(String code) {
+        if (posnInstance == null || code == null || code.trim().length() == 0) {
+            return false;
+        }
+        Object field = Safe.field(posnInstance, posInputField);
+        if (!(field instanceof Component)) {
+            return false;
+        }
+        Object enabled = Safe.call(field, "isEnabled");
+        Object editable = Safe.call(field, "isEditable");
+        if (Boolean.FALSE.equals(enabled) || Boolean.FALSE.equals(editable)) {
+            PosLog.info("POS 品項欄目前不可編輯，取消帶入");
+            return false;
+        }
+        final Component target = (Component) field;
+        focusShellWindow();
+        Safe.call(field, "setText", new Class<?>[] { String.class }, new Object[] { code.trim() });
+        Safe.call(field, "requestFocusInWindow");
+        SwingUtilities.invokeLater(new Runnable() {
+            public void run() {
+                Safe.guard("送出品項", new Runnable() {
+                    public void run() {
+                        java.awt.event.KeyEvent enter = new java.awt.event.KeyEvent(target,
+                            java.awt.event.KeyEvent.KEY_PRESSED, System.currentTimeMillis(), 0,
+                            java.awt.event.KeyEvent.VK_ENTER, '\n');
+                        for (java.awt.event.KeyListener listener : target.getKeyListeners()) {
+                            listener.keyPressed(enter);
+                            if (enter.isConsumed()) {
+                                break;
+                            }
+                        }
+                    }
+                });
+            }
+        });
+        PosLog.info("重開單據 已送出品項到 POS");
+        return true;
+    }
+
+    public void armSerial(String serial) {
+        armedSerial = serial;
+        if (serial != null) {
+            installSerialWatcher();
+        }
+    }
+
+    public String openDialog() {
+        for (Window window : Window.getWindows()) {
+            if (window instanceof java.awt.Dialog && window.isShowing()
+                && ((java.awt.Dialog) window).isModal()) {
+                if (KEYIN_DIALOG.equals(window.getClass().getName()) && isSerialKeyin(window)) {
+                    return ReorderRunner.SERIAL;
+                }
+                return window.getClass().getSimpleName();
+            }
+        }
+        return null;
     }
 
     public String lineSignature() {
@@ -773,16 +905,6 @@ public final class PosnHook implements FloatingPanel.VipApplier, SidebarHost.Gua
         }
         int column = columnOf(model, LINE_NO_COLUMN);
         return column < 0 ? "" : Reorder.lineNo(model.getValueAt(model.getRowCount() - 1, column));
-    }
-
-    public boolean modalOpen() {
-        for (Window window : Window.getWindows()) {
-            if (window instanceof java.awt.Dialog && window.isShowing()
-                && ((java.awt.Dialog) window).isModal()) {
-                return true;
-            }
-        }
-        return false;
     }
 
     public void expectF10(String posLineNo, Reorder.Line line) {

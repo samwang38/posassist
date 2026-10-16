@@ -164,11 +164,11 @@ final class ReorderPane extends JPanel implements ReorderRunner.Listener {
             loadRecent();
             return;
         }
-        scope.setText("單號／發票號 " + number + "（查詢中…）");
+        scope.setText("單號／發票號 " + number + "（查詢中，本機沒有會再問總部…）");
         showDocs(null, "");
         Reorder.searchAsync(number, docs -> {
             scope.setText("單號／發票號 " + number);
-            showDocs(docs, "找不到這張銷售單");
+            showDocs(docs, "本機與總部都找不到這張銷售單（要完整單號或 10 碼發票號）");
         });
     }
 
@@ -191,12 +191,14 @@ final class ReorderPane extends JPanel implements ReorderRunner.Listener {
 
     private JButton docButton(final Reorder.Doc row) {
         String date = row.date == null ? "" : DAY.format(row.date);
-        String number = row.invoice.length() != 0 ? row.invoice : row.docId;
         String qty = row.qty == null ? "" : row.qty.abs().stripTrailingZeros().toPlainString() + " 件";
         String total = row.total == null ? "" : "$" + NumberFormat.getIntegerInstance().format(row.total);
-        JButton button = new JButton("<html><b>" + date + "</b>&nbsp;&nbsp;" + escape(number)
+        String who = row.vipName.length() != 0 ? row.vipName : row.vipId;
+        JButton button = new JButton("<html><b>" + date + "</b>&nbsp;&nbsp;" + escape(Reorder.label(row))
+            + (who.length() != 0 ? "&nbsp;&nbsp;" + escape(who) : "")
             + "<br><font color='#6B7280'>" + qty + "&nbsp;&nbsp;" + total
-            + (row.posNo.length() != 0 ? "&nbsp;&nbsp;機號 " + escape(row.posNo) : "")
+            + (row.itemName.length() != 0 ? "&nbsp;&nbsp;" + escape(shorten(row.itemName, 18)) : "")
+            + (row.remote ? "&nbsp;&nbsp;（總部資料，機號 " + escape(row.posNo) + "）" : "")
             + "</font></html>");
         button.setHorizontalAlignment(SwingConstants.LEFT);
         button.setFont(Style.body(button.getFont()));
@@ -211,16 +213,16 @@ final class ReorderPane extends JPanel implements ReorderRunner.Listener {
 
     private void pick(final Reorder.Doc row) {
         doc = row;
-        docTitle.setText((row.date == null ? "" : DAY.format(row.date) + "  ")
-            + (row.invoice.length() != 0 ? row.invoice : row.docId)
+        docTitle.setText((row.date == null ? "" : DAY.format(row.date) + "  ") + Reorder.label(row)
             + (row.vipId.length() != 0 ? "  會員 " + row.vipId : ""));
         model.set(new ArrayList<Reorder.Line>());
-        notice.setText("讀取明細中…");
+        run.setText("帶入 POS ▶");
+        notice.setText(row.remote ? "向總部伺服器讀取明細中…" : "讀取明細中…");
         notice.setForeground(Style.MUTED);
         detail.setText(" ");
         setRunning(false);
         cards.show(body, EDIT);
-        Reorder.linesAsync(row.docId, lines -> {
+        Reorder.linesAsync(row, lines -> {
             if (row != doc) {
                 return;             // 讀的時候店員已經換了別張
             }
@@ -262,7 +264,8 @@ final class ReorderPane extends JPanel implements ReorderRunner.Listener {
         table.setFillsViewportHeight(true);
         table.putClientProperty("terminateEditOnFocusLost", Boolean.TRUE);
         table.getTableHeader().setReorderingAllowed(false);
-        int[] widths = { 26, 86, 0, 40, 28 };
+        // 代碼要放得下 13 碼條碼；品名吃剩下的寬度
+        int[] widths = { 24, 108, 0, 34 };
         for (int i = 0; i < widths.length; i++) {
             if (widths[i] > 0) {
                 table.getColumnModel().getColumn(i).setMinWidth(widths[i]);
@@ -343,22 +346,25 @@ final class ReorderPane extends JPanel implements ReorderRunner.Listener {
     private void describeSelected() {
         int row = table.getSelectedRow();
         Reorder.Line line = row >= 0 && row < model.getRowCount() ? model.lines.get(row) : null;
-        if (line == null || !line.hasF10Values()) {
+        if (line == null || (!line.hasF10Values() && line.serial.length() == 0)) {
             detail.setText(line != null && Reorder.typeLabel(line.lineType).length() != 0
                 ? Reorder.typeLabel(line.lineType) + "：POSN 會自己重算，通常不用勾" : " ");
             return;
         }
-        StringBuilder text = new StringBuilder("<html>F10：");
+        StringBuilder text = new StringBuilder("<html>");
         if (line.serial.length() != 0) {
-            text.append("序號 ").append(escape(line.serial)).append("　");
+            text.append("序號 ").append(escape(line.serial)).append("（加入時自動填）<br>");
         }
-        for (int i = 0; i < line.refs.length; i++) {
-            if (line.refs[i].length() != 0) {
-                text.append("REF").append(i + 1).append(" ").append(escape(line.refs[i])).append("　");
+        if (line.hasF10Values()) {
+            text.append("F10：");
+            for (int i = 0; i < line.refs.length; i++) {
+                if (line.refs[i].length() != 0) {
+                    text.append("REF").append(i + 1).append(" ").append(escape(line.refs[i])).append("　");
+                }
             }
         }
         if (line.codeChanged()) {
-            text.append("<br><font color='#9B2C2C'>代碼改過，不會自動填序號</font>");
+            text.append("<br><font color='#9B2C2C'>代碼改過，不會自動填原單序號</font>");
         }
         detail.setText(text.append("</html>").toString());
     }
@@ -388,6 +394,10 @@ final class ReorderPane extends JPanel implements ReorderRunner.Listener {
             + (current.line.name.length() != 0 ? " " + current.line.name : ""), Style.MUTED);
     }
 
+    public void waiting(String message) {
+        showProgressText(message, Style.ACCENT);
+    }
+
     public void paused(String reason) {
         showProgressText(reason, Style.HINT);
         pauseBar.setVisible(true);
@@ -406,7 +416,11 @@ final class ReorderPane extends JPanel implements ReorderRunner.Listener {
                 .append(" 列要補序號：在 POS 選那一列按 F10，序號與單號會自動填好");
         }
         showProgressText(text.append("</html>").toString(), Style.ACCENT);
-        run.setVisible(false);
+        // 停止或帶完都可以再按一次；POS 已有品項時 startRun 會先提醒，避免重複帶
+        table.setEnabled(true);
+        addRow.setEnabled(true);
+        run.setText("重新帶入 ▶");
+        run.setVisible(true);
         done.setVisible(true);
         back.setEnabled(true);
         revalidate();
@@ -435,7 +449,7 @@ final class ReorderPane extends JPanel implements ReorderRunner.Listener {
     /** 帶入中按關閉等於停止；換回結帳代碼。 */
     private void close() {
         stopEditing();
-        if (runner != null && runner.running()) {
+        if (runner != null) {
             runner.stop();
         }
         runner = null;
@@ -449,8 +463,7 @@ final class ReorderPane extends JPanel implements ReorderRunner.Listener {
         static final int CODE = 1;
         static final int NAME = 2;
         static final int QTY = 3;
-        static final int F10 = 4;
-        private static final String[] NAMES = { "帶", "代碼", "品名", "數量", "F10" };
+        private static final String[] NAMES = { "帶", "代碼", "品名", "數" };
 
         List<Reorder.Line> lines = new ArrayList<Reorder.Line>();
 
@@ -491,9 +504,9 @@ final class ReorderPane extends JPanel implements ReorderRunner.Listener {
                 case CODE: return line.code;
                 case NAME:
                     String type = Reorder.typeLabel(line.lineType);
-                    return type.length() == 0 ? line.name : "（" + type + "）" + line.name;
-                case QTY: return Integer.valueOf(line.qty);
-                default: return line.hasF10Values() ? (line.codeChanged() ? "—" : "✓") : "";
+                    String mark = line.serialToFill().length() != 0 ? "［序號］" : "";
+                    return (type.length() == 0 ? "" : "（" + type + "）") + mark + line.name;
+                default: return Integer.valueOf(line.qty);
             }
         }
 
@@ -565,6 +578,10 @@ final class ReorderPane extends JPanel implements ReorderRunner.Listener {
         button.setFont(button.getFont().deriveFont(Font.BOLD));
         button.setForeground(Style.ACCENT);
         return button;
+    }
+
+    private static String shorten(String text, int max) {
+        return text.length() <= max ? text : text.substring(0, max) + "…";
     }
 
     private static String escape(String text) {

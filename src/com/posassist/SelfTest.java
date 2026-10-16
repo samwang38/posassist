@@ -100,6 +100,10 @@ public final class SelfTest {
         publicField("com.ipt.app.posn.ui.PosSerialNoDialog", "serialNoTextField");
         publicField("com.ipt.app.posn.ui.PosSerialNoDialog", "lineRef1TextField");
         publicField("com.ipt.app.posn.ui.PosSerialNoDialog", "lineRef8TextField");
+        // 主機加入前的序號輸入視窗，重開單據會幫忙填序號
+        clazz("com.ipt.app.posn.ui.PosKeyinDialog");
+        publicField("com.ipt.app.posn.ui.PosKeyinDialog", "keyField");
+        declaredField("com.ipt.app.posn.ui.PosKeyinDialog", "type");
 
         System.out.println();
         System.out.println("[5] 側欄嵌入");
@@ -217,6 +221,8 @@ public final class SelfTest {
         bindCount("重開單據 本機", Reorder.SQL_BY_POS, 2);
         bindCount("重開單據 單號", Reorder.SQL_BY_NUMBER, 2);
         bindCount("重開單據 明細", Reorder.LINE_SQL, 1);
+        bindCount("重開單據 伺服器單號", Reorder.REMOTE_DOC_SQL, 2);
+        bindCount("重開單據 伺服器明細", Reorder.REMOTE_LINE_SQL, 1);
         // 備註4（LINE 會員）：帶與不帶兩種 SQL 都要能用，欄位不存在時才降得下去
         // 慢查詢診斷用的 SQL 也要兩邊都能跑，而且不能把原句改壞
         sqlPortable("診斷 會員數", "SELECT COUNT(*) FROM POS_VIP_MAS");

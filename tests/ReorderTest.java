@@ -47,15 +47,17 @@ public final class ReorderTest {
         check("F9X3K2L".equals(ipad.serial), "序號讀進來");
         check("R2026101".equals(ipad.refs[6]), "REF7 在索引 6");
         check("".equals(ipad.refs[0]), "沒值的 REF 是空字串");
-        check(ipad.hasF10Values(), "有序號就要補 F10");
+        check(ipad.hasF10Values(), "有預約單號（REF7）就要補 F10");
+        check("F9X3K2L".equals(ipad.serialToFill()), "加入時要填的序號");
         check(!ipad.codeChanged(), "沒改代碼");
         ipad.code = "07313591";
         check(ipad.codeChanged(), "改了代碼就不填原序號");
+        check("".equals(ipad.serialToFill()), "改了代碼序號清空");
 
         Reorder.Line film = lines.get(1);
         check("99901687".equals(film.code), "沒有 PLU 退回存貨代碼");
         check(film.qty == 2, "數量 2");
-        check(!film.hasF10Values(), "沒有序號");
+        check(!film.hasF10Values() && "".equals(film.serialToFill()), "沒有序號也沒有 REF");
 
         Reorder.Line disc = lines.get(2);
         check(!disc.include, "折扣列預設不勾");
@@ -102,23 +104,29 @@ public final class ReorderTest {
     static void docs() {
         List<Vector> rows = new ArrayList<Vector>();
         rows.add(new Vector(Arrays.asList("D001", new java.sql.Timestamp(0), "P01", "V001",
-            "AB12345678", new BigDecimal("35900"), new BigDecimal("2"))));
-        rows.add(new Vector(Arrays.asList("D002", null, null, null, null, null, null)));
+            "AB12345678", new BigDecimal("35900"), new BigDecimal("2"), "王小明", "iPad Air")));
+        rows.add(new Vector(Arrays.asList("7572-004e02-20261016152029-0001", null, null, null, null, null, null, null, null)));
         List<Reorder.Doc> docs = Reorder.docs(rows);
         check(docs.size() == 2, "兩張單");
         check("AB12345678".equals(docs.get(0).invoice) && docs.get(0).date != null, "發票與日期");
+        check("王小明".equals(docs.get(0).vipName) && "iPad Air".equals(docs.get(0).itemName), "會員名與品名");
+        check(!docs.get(0).remote, "本機查到的不是伺服器資料");
         check("".equals(docs.get(1).vipId) && docs.get(1).total == null, "空值不炸");
+        check("AB12345678".equals(Reorder.label(docs.get(0))), "有發票號用發票號");
+        check("未開發票 0001".equals(Reorder.label(docs.get(1))), "沒發票號用單號最後一段");
         check(Reorder.docs(null) == null, "查詢失敗維持 null");
     }
 
     static void sql() {
-        String[] all = { Reorder.SQL_BY_VIP, Reorder.SQL_BY_POS, Reorder.SQL_BY_NUMBER, Reorder.LINE_SQL };
+        String[] all = { Reorder.SQL_BY_VIP, Reorder.SQL_BY_POS, Reorder.SQL_BY_NUMBER, Reorder.LINE_SQL,
+            Reorder.REMOTE_DOC_SQL, Reorder.REMOTE_LINE_SQL };
         for (String sql : all) {
             String upper = sql.toUpperCase();
             check(upper.startsWith("SELECT "), "只有 SELECT");
             check(upper.indexOf("CURRENT_DATE") < 0 && upper.indexOf("SYSDATE") < 0, "日期用參數");
         }
         check(Reorder.SQL_BY_VIP.indexOf("TRANS_TYPE = 'A'") > 0, "只列銷售單");
+        check(Reorder.REMOTE_DOC_SQL.indexOf("TRANS_TYPE = 'A'") > 0, "伺服器也只列銷售單");
         check(Reorder.daysAgo(0).getTime() <= System.currentTimeMillis(), "今天零點不在未來");
     }
 }
