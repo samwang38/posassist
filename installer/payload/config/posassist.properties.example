@@ -27,6 +27,7 @@ inventoryDefaultStore=SA004
 # 等同店員自己打代碼按 Enter。本機找不到的單（別台開的）會改向總部查詢。
 # 主機的原單序號會自動填進「Key in unicode」，店員確認後按 Enter；預約單號在對該列按 F10 時填入。
 # 只查詢不寫入；POS 跳出需要處理的視窗會暫停等店員。
+# 通常用設定視窗的「重開單據」勾選就好，不必手改這行。
 #enableReorder=true
 
 # 開啟 EPB 時要不要自動更新到最新版（true / false）。

@@ -68,6 +68,7 @@ public final class SettingsDialog {
     private final JCheckBox enableVipCreateBox =
         new JCheckBox("會員建立（試用）");
     private final JCheckBox enableInventoryBox = new JCheckBox("庫存與調撥（SA 單機試用）");
+    private final JCheckBox enableReorderBox = new JCheckBox("顯示「重開單據」按鈕");
     private final JTextField inventoryStoreField = new JTextField("SA004");
     private final JTextField codesSyncDirField = new JTextField();
     /** 打開視窗時的同步資料夾。存檔時換了資料夾，才需要做第一次同步的引導。 */
@@ -177,6 +178,7 @@ public final class SettingsDialog {
             && "true".equalsIgnoreCase(panel.getProperty("enableVipCreate", "false").trim());
         enableVipCreateBox.setSelected(vipCreate);
         enableInventoryBox.setSelected(panel != null && "true".equalsIgnoreCase(panel.getProperty("enableInventory", "false").trim()));
+        enableReorderBox.setSelected(panel != null && "true".equalsIgnoreCase(panel.getProperty("enableReorder", "false").trim()));
         inventoryStoreField.setText(panel == null ? "SA004" : panel.getProperty("inventoryDefaultStore", "SA004"));
         originalSyncDir = panel == null ? "" : panel.getProperty(CodeSync.DIR_KEY, "").trim();
         codesSyncDirField.setText(originalSyncDir);
@@ -231,6 +233,13 @@ public final class SettingsDialog {
         vipFieldHint.setFont(vipFieldHint.getFont().deriveFont(11f));
         addHint(form, row - 1, vipFieldHint);
         syncVipFieldEnablement();
+
+        addRow(form, row++, "重開單據", enableReorderBox);
+        JLabel reorderHint = new JLabel(
+            "會員查詢旁多一顆按鈕：選一張已結帳的單，勾選或改代碼後依序帶回 POS。存檔後重開 EPB 生效。");
+        reorderHint.setForeground(MUTED);
+        reorderHint.setFont(reorderHint.getFont().deriveFont(11f));
+        addHint(form, row - 1, reorderHint);
 
         addRow(form, row++, "庫存工具", enableInventoryBox);
         addField(form, row++, "預設收貨倉", inventoryStoreField, "SA004＝士林；啟用後重開 EPB，庫存工具可獨立於 POS 使用");
@@ -668,6 +677,7 @@ public final class SettingsDialog {
         managed.put("autoUpdate", String.valueOf(autoUpdateBox.isSelected()));
         managed.put("enableVipCreate", String.valueOf(enableVipCreateBox.isSelected()));
         managed.put("enableInventory", String.valueOf(enableInventoryBox.isSelected()));
+        managed.put("enableReorder", String.valueOf(enableReorderBox.isSelected()));
         managed.put("inventoryDefaultStore", inventoryStoreField.getText().trim().toUpperCase(java.util.Locale.ROOT));
         managed.put(CodeSync.DIR_KEY, escape(codesSyncDirField.getText().trim()));
         String vipFields = selectedVipFields();
