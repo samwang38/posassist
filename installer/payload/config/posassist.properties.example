@@ -14,6 +14,10 @@
 # 覺得嵌入版不合用，改成 floating 重開 EPB 即可，不必重裝。
 panelMode=embedded
 
+# 查詢預約：關閉後停止背景更新並隱藏預約區塊。重開 EPB 生效。
+# 開啟時需已設定 reservation.properties 的門市帳密。
+enableReservation=true
+
 # 庫存與調撥第一版：預設關閉，SA 一般門市單機試用。
 # 啟用後登入即掛載三分類（輔助工具／庫存與調撥／應用程式）；關閉 POSN 保留勾選商品。
 # 浮動模式可隱藏，切換或開啟 EPB 應用程式會再顯示。

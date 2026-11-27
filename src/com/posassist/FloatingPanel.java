@@ -816,7 +816,7 @@ public final class FloatingPanel {
         if (!cache.isEnabled()) {
             // 還沒設定過帳密時，給一個直接開設定視窗的入口 ——
             // 門市人員不必知道要去改哪個文字檔
-            if (!Home.file("config/reservation.properties").isFile()) {
+            if (cache.shouldPromptSetup()) {
                 showSetupPrompt();
             } else {
                 hideReservations();
@@ -976,7 +976,7 @@ public final class FloatingPanel {
         button.setMargin(new Insets(0, 0, 0, 0));
         button.setBorder(BorderFactory.createEmptyBorder());
         button.setCursor(Cursor.getPredefinedCursor(Cursor.HAND_CURSOR));
-        button.setToolTipText("預約帳密、面板位置、會員建立與表單欄位");
+        button.setToolTipText("預約查詢與帳密、面板位置、會員建立與表單欄位");
         button.addActionListener(new ActionListener() {
             public void actionPerformed(ActionEvent event) {
                 Safe.guard("開啟設定", new Runnable() {

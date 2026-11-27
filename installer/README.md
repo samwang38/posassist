@@ -101,7 +101,8 @@ POSASSIST_EPB_ROOT=/path/to/EPBrowser ./安裝_PosAssist.command
 
 查到會員時，一併列出他近 30 日的預約：預約單號、產品名稱、預約狀態、登記日期。
 
-**預設不啟用。** 要開啟，在安裝目錄 `<EPB_ROOT>/EPB/PosAssist/config/` 底下：
+第一次使用可在面板右下角的「設定 → 預約系統」填入門市帳密，勾選「啟用自動查詢」，儲存後重開 EPB。
+也可在安裝目錄 `<EPB_ROOT>/EPB/PosAssist/config/` 底下手動建立設定檔：
 
 ```bash
 cp reservation.properties.example reservation.properties
@@ -110,8 +111,14 @@ chmod 600 reservation.properties
 
 填入**這家門市自己的**預約系統帳號密碼（每家店不同），重開 EPB 即生效。
 
-運作方式：背景每小時抓一次近 30 日資料建索引，**結帳時只查記憶體、不連網**，
+沒有預約活動時，取消勾選「啟用自動查詢」，儲存後重開 EPB。背景查詢和預約區塊會關閉，原有帳密會保留。
+下次有活動時勾回、儲存並重開 EPB。舊版已設定帳密的門市會沿用原本的查詢行為。
+
+運作方式：EPB 登入完成後立即抓一次近 30 日資料建索引；之後每輪結束（包含失敗）後，
+隨機等待 45–75 分鐘再抓，且每輪重新抽取等待時間。**結帳時只查記憶體、不連網**，
 所以不會拖慢結帳。抓取失敗會沿用上一份資料，並在 log 留一筆。
+`reservation.properties` 的 `refreshMinutes` 是間隔基準，實際隨機浮動 ±25%，
+並限制在 5–1440 分鐘內；既有的 `refreshMinutes=60` 不需修改。
 
 面板上會標示資料時間（例「近期預約 · 15:40 更新」），店員知道資料多新。
 

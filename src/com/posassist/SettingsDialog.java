@@ -62,6 +62,7 @@ public final class SettingsDialog {
     private final JTextField userNameField = new JTextField();
     private final JPasswordField passwordField = new JPasswordField();
     private final JTextField windowDaysField = new JTextField("30");
+    private final JCheckBox enableReservationBox = new JCheckBox("啟用自動查詢");
     private final JRadioButton embeddedRadio = new JRadioButton("嵌進 EPB 左側欄");
     private final JRadioButton floatingRadio = new JRadioButton("獨立浮動視窗");
     private final JCheckBox autoUpdateBox = new JCheckBox("開啟時自動更新到最新版");
@@ -113,6 +114,9 @@ public final class SettingsDialog {
     private final JLabel message = new JLabel(" ");
     private final JButton testButton = new JButton("測試連線");
 
+    private final String originalReservationUrl;
+    private final String originalReservationUser;
+    private final String originalReservationDays;
     private boolean hadPassword;
     private boolean saved;
 
@@ -120,6 +124,9 @@ public final class SettingsDialog {
         dialog = new JDialog(owner, "PosAssist 設定", JDialog.ModalityType.APPLICATION_MODAL);
         dialog.setDefaultCloseOperation(JDialog.DISPOSE_ON_CLOSE);
         loadExisting();
+        originalReservationUrl = baseUrlField.getText().trim();
+        originalReservationUser = userNameField.getText().trim();
+        originalReservationDays = windowDaysField.getText().trim();
         dialog.setContentPane(buildContent());
         dialog.pack();
         dialog.setSize(Math.max(520, dialog.getWidth()), dialog.getHeight());
@@ -166,6 +173,7 @@ public final class SettingsDialog {
             }
         }
         Properties panel = Home.props(PANEL_PATH);
+        enableReservationBox.setSelected(ReservationCache.isQueryEnabled(panel));
         boolean floating = panel != null
             && "floating".equalsIgnoreCase(panel.getProperty("panelMode", "").trim());
         embeddedRadio.setSelected(!floating);
@@ -197,6 +205,8 @@ public final class SettingsDialog {
 
         JPanel form = new JPanel(new GridBagLayout());
         int row = 0;
+        enableReservationBox.setToolTipText("儲存後重開 EPB 生效");
+        addRow(form, row++, "查詢預約", enableReservationBox);
         addField(form, row++, "網址", baseUrlField, null);
         addField(form, row++, "帳號", userNameField, "這家門市自己的預約系統帳號");
         passwordHint.setText(hadPassword ? "已設定，留空表示不變更" : "尚未設定");
@@ -540,23 +550,12 @@ public final class SettingsDialog {
         }
         String baseUrl = baseUrlField.getText().trim();
         String userName = userNameField.getText().trim();
-        String password = currentPassword();
-        boolean wantsReservation = userName.length() != 0 || password.length() != 0;
-
-        if (wantsReservation) {
-            if (!baseUrl.toLowerCase().startsWith("https://")) {
-                say("網址必須是 https://", false);
-                return;
-            }
-            if (userName.length() == 0 || password.length() == 0) {
-                say("帳號與密碼要一起填", false);
-                return;
-            }
-            String problem = writeReservation(baseUrl, userName, password);
-            if (problem != null) {
-                say(problem, false);
-                return;
-            }
+        boolean reservationEdited = !originalReservationUrl.equals(baseUrl)
+            || !originalReservationUser.equals(userName)
+            || !originalReservationDays.equals(windowDaysField.getText().trim())
+            || passwordField.getDocument().getLength() != 0;
+        if (reservationEdited && !saveReservation(baseUrl, userName)) {
+            return;
         }
 
         String problem = writePanel();
@@ -570,6 +569,27 @@ public final class SettingsDialog {
         }
         saved = true;
         dialog.dispose();
+    }
+
+    private boolean saveReservation(String baseUrl, String userName) {
+        String password = currentPassword();
+        if (userName.length() == 0 && password.length() == 0) {
+            return true;
+        }
+        if (!baseUrl.toLowerCase().startsWith("https://")) {
+            say("網址必須是 https://", false);
+            return false;
+        }
+        if (userName.length() == 0 || password.length() == 0) {
+            say("帳號與密碼要一起填", false);
+            return false;
+        }
+        String problem = writeReservation(baseUrl, userName, password);
+        if (problem != null) {
+            say(problem, false);
+            return false;
+        }
+        return true;
     }
 
     // -- 結帳代碼同步 ------------------------------------------------------
@@ -659,6 +679,7 @@ public final class SettingsDialog {
         body.append("userName=").append(escape(userName)).append('\n');
         body.append("password=").append(escape(password)).append('\n');
         body.append("windowDays=").append(days).append('\n');
+        body.append("# 更新間隔基準，實際每輪隨機浮動 ±25%（60 表示 45–75 分鐘）。\n");
         body.append("refreshMinutes=60\n");
         body.append("maxRows=3\n");
         return Home.write(RESERVATION_PATH, body.toString(), true);
@@ -675,6 +696,7 @@ public final class SettingsDialog {
         Map<String, String> managed = new LinkedHashMap<String, String>();
         managed.put("panelMode", floatingRadio.isSelected() ? "floating" : "embedded");
         managed.put("autoUpdate", String.valueOf(autoUpdateBox.isSelected()));
+        managed.put(ReservationCache.QUERY_ENABLED_KEY, String.valueOf(enableReservationBox.isSelected()));
         managed.put("enableVipCreate", String.valueOf(enableVipCreateBox.isSelected()));
         managed.put("enableInventory", String.valueOf(enableInventoryBox.isSelected()));
         managed.put("enableReorder", String.valueOf(enableReorderBox.isSelected()));

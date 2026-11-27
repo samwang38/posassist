@@ -80,7 +80,7 @@ public final class Launcher {
                 if (!hook.install()) {
                     PosLog.warn("外掛未能掛上，EPB 照常運作");
                 }
-                // 預約索引：沒有設定檔就自己不啟用
+                // 預約索引會依開關和帳密設定決定是否啟動。
                 Safe.guard("啟動預約索引", new Runnable() {
                     public void run() {
                         ReservationCache.getInstance().start();

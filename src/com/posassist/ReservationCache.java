@@ -11,9 +11,10 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.concurrent.ThreadLocalRandom;
 
 /**
- * 預約索引：背景每小時抓一次近 N 日的預約，在記憶體裡建 vipId → 預約清單。
+ * 預約索引：背景以隨機間隔抓取近 N 日的預約，在記憶體裡建 vipId → 預約清單。
  *
  * 為什麼要預抓：上游 API 沒有依會員過濾的參數，只能抓日期區間再自己篩。
  * 若每次查會員都現場抓，結帳會卡好幾秒。預抓之後，結帳路徑只做一次 map 查表。
@@ -24,6 +25,8 @@ import java.util.Properties;
 public final class ReservationCache {
 
     private static final String CONFIG_NAME = "config/reservation.properties";
+    private static final String PANEL_CONFIG = "config/posassist.properties";
+    static final String QUERY_ENABLED_KEY = "enableReservation";
     private static final int DEFAULT_WINDOW_DAYS = 30;
     private static final int DEFAULT_REFRESH_MINUTES = 60;
     private static final int DEFAULT_MAX_ROWS = 3;
@@ -43,6 +46,7 @@ public final class ReservationCache {
         { "已取貨" },           // 已完成
     };
     private static final int MIN_REFRESH_MINUTES = 5;
+    private static final int MAX_REFRESH_MINUTES = 1440;
 
     private static final ReservationCache INSTANCE = new ReservationCache();
 
@@ -50,6 +54,7 @@ public final class ReservationCache {
         Collections.emptyMap();
     private volatile Date updatedAt;
     private volatile boolean enabled;
+    private volatile boolean queryEnabled;
     private volatile int maxRows = DEFAULT_MAX_ROWS;
     private boolean started;
 
@@ -65,6 +70,10 @@ public final class ReservationCache {
     /** 有沒有在跑。面板據此決定要不要顯示預約區塊。 */
     public boolean isEnabled() {
         return enabled;
+    }
+
+    boolean shouldPromptSetup() {
+        return queryEnabled && !Home.file(CONFIG_NAME).isFile();
     }
 
     public int maxRows() {
@@ -87,12 +96,18 @@ public final class ReservationCache {
 
     // -- 啟動 --------------------------------------------------------------
 
-    /** 由 Launcher 在登入完成後呼叫一次。沒設定檔就直接返回。 */
+    /** 由 Launcher 在登入完成後呼叫一次。 */
     public synchronized void start() {
         if (started) {
             return;
         }
         started = true;
+
+        queryEnabled = isQueryEnabled(Home.props(PANEL_CONFIG));
+        if (!queryEnabled) {
+            PosLog.info("已關閉自動查詢預約");
+            return;
+        }
 
         File configFile = new File(home(), CONFIG_NAME);
         if (!configFile.isFile()) {
@@ -124,12 +139,20 @@ public final class ReservationCache {
         final int apiWindowDays =
             number(config, "apiWindowDays", DEFAULT_API_WINDOW_DAYS, 30, 730);
         final int refreshMinutes =
-            number(config, "refreshMinutes", DEFAULT_REFRESH_MINUTES, MIN_REFRESH_MINUTES, 1440);
+            number(config, "refreshMinutes", DEFAULT_REFRESH_MINUTES,
+                MIN_REFRESH_MINUTES, MAX_REFRESH_MINUTES);
+        // 相容既有 refreshMinutes，以它為基準上下浮動 25%，在毫秒範圍抽取。
+        final long refreshMillis = (long) refreshMinutes * 60 * 1000L;
+        final long minDelayMillis = Math.max(
+            (long) MIN_REFRESH_MINUTES * 60 * 1000L, refreshMillis * 3 / 4);
+        final long maxDelayMillis = Math.min(
+            (long) MAX_REFRESH_MINUTES * 60 * 1000L, refreshMillis * 5 / 4);
         maxRows = number(config, "maxRows", DEFAULT_MAX_ROWS, 1, 10);
 
         final ReservationClient client = new ReservationClient(baseUrl, userName, password);
         enabled = true;
-        PosLog.info("預約功能啟用：近 " + windowDays + " 日，每 " + refreshMinutes + " 分鐘更新");
+        PosLog.info("預約功能啟用：近 " + windowDays + " 日，更新間隔以 " + refreshMinutes
+            + " 分鐘為基準隨機浮動 ±25%（限 5–1440 分鐘）");
 
         Thread worker = new Thread(new Runnable() {
             public void run() {
@@ -140,7 +163,9 @@ public final class ReservationCache {
                         }
                     });
                     try {
-                        Thread.sleep((long) refreshMinutes * 60 * 1000L);
+                        // 第一輪立即抓取；之後不論成功或失敗，每輪結束都重新抽等待時間。
+                        Thread.sleep(ThreadLocalRandom.current().nextLong(
+                            minDelayMillis, maxDelayMillis + 1));
                     } catch (InterruptedException interrupted) {
                         Thread.currentThread().interrupt();
                         return;
@@ -231,6 +256,12 @@ public final class ReservationCache {
 
     // -- 設定 --------------------------------------------------------------
 
+    /** 舊版設定沒有開關，已設定帳密的門市會照常更新。 */
+    static boolean isQueryEnabled(Properties panel) {
+        return panel == null || !"false".equalsIgnoreCase(
+            panel.getProperty(QUERY_ENABLED_KEY, "true").trim());
+    }
+
     private static Properties read(File file) {
         InputStream in = null;
         try {
@@ -265,6 +296,9 @@ public final class ReservationCache {
      * 給自我檢查用的設定狀態描述。只回結論，不回任何設定值。
      */
     static String configStatus() {
+        if (!isQueryEnabled(Home.props(PANEL_CONFIG))) {
+            return "已關閉自動查詢預約";
+        }
         File configFile = new File(home(), CONFIG_NAME);
         if (!configFile.isFile()) {
             return "未設定（預約功能關閉，面板其餘功能不受影響）";
@@ -291,9 +325,12 @@ public final class ReservationCache {
 
     /**
      * 對設定檔裡的主機做一次 TLS 交握檢查（不登入）。
-     * 沒設定回 null；成功回空字串；失敗回原因。
+     * 已關閉或沒設定回 null；成功回空字串；失敗回原因。
      */
     static String probeConfiguredHost() {
+        if (!isQueryEnabled(Home.props(PANEL_CONFIG))) {
+            return null;
+        }
         File configFile = new File(home(), CONFIG_NAME);
         if (!configFile.isFile()) {
             return null;

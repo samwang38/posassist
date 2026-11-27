@@ -201,7 +201,7 @@ public final class SelfTest {
 
         String probe = ReservationCache.probeConfiguredHost();
         if (probe == null) {
-            System.out.println("       連線檢查：略過（未設定）");
+            System.out.println("       連線檢查：略過（已關閉或未設定）");
         } else {
             record("預約主機連線與 TLS 交握"
                 + (probe.length() == 0 ? "" : "：" + probe), probe.length() == 0);
